@@ -14,7 +14,7 @@ load_dotenv()
 
 # ====== Конфигурация ======
 YANDEX_DISK_OAUTH_TOKEN = os.environ.get("YANDEX_DISK_OAUTH_TOKEN")
-DISK_FOLDER_PATH = "disk:/Настя Рыбка/Школа Насти Рыбки/Архив знаний"
+DISK_FOLDER_PATH = "disk:/Настя Рыбка/Школа Насти Рыбки/1-я ступень"
 
 YANDEX_SPEECHKIT_API_KEY = os.environ.get("YANDEX_SPEECHKIT_API_KEY")
 YANDEX_SPEECHKIT_IAM_TOKEN = os.environ.get("YANDEX_SPEECHKIT_IAM_TOKEN")  # Используется API-ключ
