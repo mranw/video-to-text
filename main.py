@@ -122,10 +122,26 @@ def download_file(url, local_path):
     try:
         with requests.get(url, stream=True) as r:
             r.raise_for_status()
+            total_size = int(r.headers.get('content-length', 0))  # Получаем размер файла, если он доступен
+            downloaded_size = 0
+            chunk_size = 8192  # Размер чанка для чтения
+            start_time = time.time()
             with open(local_path, 'wb') as f:
-                for chunk in r.iter_content(chunk_size=8192):
+                for chunk in r.iter_content(chunk_size=chunk_size):
                     if chunk:
                         f.write(chunk)
+                        downloaded_size += len(chunk)
+                        elapsed_time = time.time() - start_time
+                        download_speed = downloaded_size / (elapsed_time * 1024)  # Скорость в КБ/с
+
+                        if total_size > 0:
+                            progress = (downloaded_size / total_size) * 100
+                            logging.info(
+                                f"Загружено: {downloaded_size} / {total_size} байт ({progress:.2f}%), скорость: {download_speed:.2f} КБ/с")
+                        else:
+                            logging.info(f"Загружено: {downloaded_size} байт, скорость: {download_speed:.2f} КБ/с")
+
+        logging.info(f"Файл успешно загружен: {local_path}")
         return True
     except Exception as e:
         logging.error(f"Ошибка скачивания файла {url}: {e}")
@@ -280,27 +296,33 @@ def process_video_file(file_item):
     local_audio = os.path.splitext(local_video)[0] + ".ogg"
 
     try:
+        logging.info(f"Начало загрузки видеофайла: {file_path}")
         if not download_file(download_url, local_video):
             logging.error(f"Не удалось скачать файл: {file_path}")
             return
+        logging.info(f"Видеофайл успешно загружен: {file_path}")
 
+        logging.info(f"Начало извлечения аудио из видеофайла: {file_path}")
         if not extract_audio(local_video, local_audio):
             logging.error(f"Не удалось извлечь аудио из файла: {file_path}")
             return
+        logging.info(f"Аудио успешно извлечено из видеофайла: {file_path}")
 
         audio_duration = get_audio_duration(local_audio)
         if not audio_duration:
             logging.error(f"Не удалось получить длительность аудио для файла: {file_path}")
             return
+        logging.info(f"Длительность аудио: {audio_duration} секунд")
 
         object_name = os.path.basename(local_audio)
+        logging.info(f"Начало загрузки аудио в Yandex Object Storage: {object_name}")
         public_url = upload_to_object_storage(local_audio, object_name)
         if not public_url:
             logging.error(f"Ошибка загрузки аудио в Yandex Object Storage для файла: {file_path}")
             return
-
         logging.info(f"Аудио успешно загружено, публичная ссылка: {public_url}")
 
+        logging.info(f"Начало распознавания аудио: {file_path}")
         recognized_text = async_recognize_speech(public_url, audio_duration)
         if recognized_text:
             entry = f"\n=== Файл: {file_path} ===\nРаспознанный текст:\n{recognized_text}\n"
