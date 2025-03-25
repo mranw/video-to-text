@@ -14,10 +14,10 @@ load_dotenv()
 
 # ====== Конфигурация ======
 YANDEX_DISK_OAUTH_TOKEN = os.environ.get("YANDEX_DISK_OAUTH_TOKEN")
-DISK_FOLDER_PATH = "disk:/Настя Рыбка/Школа Насти Рыбки/1-я ступень"
+DISK_FOLDER_PATH = "disk:/Настя Рыбка/Школа Насти Рыбки/test"
 
 YANDEX_SPEECHKIT_API_KEY = os.environ.get("YANDEX_SPEECHKIT_API_KEY")
-YANDEX_SPEECHKIT_IAM_TOKEN = os.environ.get("YANDEX_SPEECHKIT_IAM_TOKEN")  # Используется API-ключ
+#YANDEX_SPEECHKIT_IAM_TOKEN = os.environ.get("YANDEX_SPEECHKIT_IAM_TOKEN")
 
 SPEECHKIT_ASYNC_URL = "https://transcribe.api.cloud.yandex.net/speech/stt/v2/longRunningRecognize"
 LANGUAGE = "ru-RU"
@@ -36,6 +36,7 @@ TEMP_DIR = "temp"
 # Интервал сканирования - 12 часов
 SCAN_INTERVAL = 43200
 
+# ====== Настройка логирования ======
 logging.basicConfig(filename='video_processor.log',
                     level=logging.INFO,
                     format='%(asctime)s - %(levelname)s - %(message)s')
@@ -47,7 +48,7 @@ if not os.path.exists(PROCESSED_FILES_RECORD):
     with open(PROCESSED_FILES_RECORD, 'w', encoding='utf-8') as f:
         f.write("{}")
 
-# Инициализация клиента для Yandex Object Storage
+# ====== Инициализация клиента для Yandex Object Storage ======
 s3_client = boto3.client('s3',
                          endpoint_url=YOBJECT_STORAGE_ENDPOINT,
                          aws_access_key_id=YOBJECT_STORAGE_ACCESS_KEY,
@@ -126,20 +127,28 @@ def download_file(url, local_path):
             downloaded_size = 0
             chunk_size = 8192  # Размер чанка для чтения
             start_time = time.time()
+            last_log_time = start_time
+
             with open(local_path, 'wb') as f:
                 for chunk in r.iter_content(chunk_size=chunk_size):
                     if chunk:
                         f.write(chunk)
                         downloaded_size += len(chunk)
-                        elapsed_time = time.time() - start_time
-                        download_speed = downloaded_size / (elapsed_time * 1024)  # Скорость в КБ/с
+                        current_time = time.time()
 
-                        if total_size > 0:
-                            progress = (downloaded_size / total_size) * 100
-                            logging.info(
-                                f"Загружено: {downloaded_size} / {total_size} байт ({progress:.2f}%), скорость: {download_speed:.2f} КБ/с")
-                        else:
-                            logging.info(f"Загружено: {downloaded_size} байт, скорость: {download_speed:.2f} КБ/с")
+                        # Логирование каждые 10 секунд или по завершении загрузки
+                        if current_time - last_log_time >= 10 or downloaded_size == total_size:
+                            elapsed_time = current_time - start_time
+                            download_speed = downloaded_size / (elapsed_time * 1024)  # КБ/с
+
+                            if total_size > 0:
+                                progress = (downloaded_size / total_size) * 100
+                                logging.info(
+                                    f"Загружено: {downloaded_size} / {total_size} байт ({progress:.2f}%), скорость: {download_speed:.2f} КБ/с")
+                            else:
+                                logging.info(f"Загружено: {downloaded_size} байт, скорость: {download_speed:.2f} КБ/с")
+
+                            last_log_time = current_time
 
         logging.info(f"Файл успешно загружен: {local_path}")
         return True
