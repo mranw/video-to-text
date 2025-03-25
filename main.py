@@ -21,7 +21,7 @@ YANDEX_SPEECHKIT_API_KEY = os.environ.get("YANDEX_SPEECHKIT_API_KEY")
 
 SPEECHKIT_ASYNC_URL = "https://transcribe.api.cloud.yandex.net/speech/stt/v2/longRunningRecognize"
 LANGUAGE = "ru-RU"
-RECOGNITION_MODEL = "general"  # Для распознавания в отложенном режиме укажите модель 'deferred-general'
+RECOGNITION_MODEL = "deferred-general"  # Для распознавания в стандартном режиме укажите модель 'general'
 
 YOBJECT_STORAGE_BUCKET = "video-to-text"
 YOBJECT_STORAGE_ACCESS_KEY = os.environ.get("YOBJECT_STORAGE_ACCESS_KEY")
@@ -210,7 +210,13 @@ def upload_to_object_storage(local_file, object_name):
 def async_recognize_speech(file_url, audio_duration, model=RECOGNITION_MODEL):
     """
     Отправляет запрос на асинхронное распознавание аудиофайла.
-    Использует динамический интервал ожидания, зависящий от длительности аудио.
+    Если модель 'general' – используется динамический интервал ожидания,
+    если 'deferred-general' – фиксированный интервал опроса с максимальным временем ожидания 24 часа.
+
+    Ограничения:
+      - Запросов на распознавание в час: 500 (POST-запросы, их обычно мало)
+      - Запросов на проверку статуса операции в час: 2500
+      - Тарифицированных часов аудио в сутки: 10000 (отсчет с момента первого запроса)
     """
     headers = {
         "Authorization": f"Api-Key {YANDEX_SPEECHKIT_API_KEY}",
@@ -242,12 +248,31 @@ def async_recognize_speech(file_url, audio_duration, model=RECOGNITION_MODEL):
         op_url = f"https://operation.api.cloud.yandex.net/operations/{operation_id}"
         logging.info(f"Запущена операция распознавания, id: {operation_id}")
 
-        # Расчет динамического интервала ожидания
-        expected_processing_time = audio_duration / 6.0  # Пример: 1 минута -> ~10 сек распознавания
-        sleep_interval = max(10, expected_processing_time / 3.0)  # Интервал не меньше 10 секунд
-        logging.info(f"Ожидаемое время обработки: {expected_processing_time:.1f} сек, интервал опроса: {sleep_interval:.1f} сек")
+        # Определяем интервал опроса и максимальное время ожидания в зависимости от модели
+        if model == "general":
+            # Динамический интервал: предполагается, что audio_duration/6 - ориентировочное время обработки
+            expected_processing_time = audio_duration / 6.0  # например, 60 сек аудио -> ~10 сек обработки
+            sleep_interval = max(10, expected_processing_time / 3.0)  # минимум 10 сек
+            max_wait_time = expected_processing_time * 10  # допускаем, что обработка займёт не более 10х ожидаемого времени
+        elif model == "deferred-general":
+            # Фиксированный интервал опроса для отложенного режима
+            sleep_interval = 60  # опрашиваем раз в 60 сек
+            max_wait_time = 86400  # 24 часа в секундах
+        else:
+            # По умолчанию используем динамический алгоритм
+            expected_processing_time = audio_duration / 6.0
+            sleep_interval = max(10, expected_processing_time / 3.0)
+            max_wait_time = expected_processing_time * 10
+
+        logging.info(f"Модель распознавания: {model}. Интервал опроса: {sleep_interval:.1f} сек, "
+                     f"максимальное время ожидания: {max_wait_time:.1f} сек")
+        start_time = time.time()
 
         while True:
+            # Если превышено максимальное время ожидания, завершаем попытки
+            if time.time() - start_time > max_wait_time:
+                logging.error("Превышено максимальное время ожидания распознавания.")
+                return ""
             time.sleep(sleep_interval)
             op_response = requests.get(op_url, headers=headers)
             logging.debug(f"HTTP статус запроса статуса: {op_response.status_code}")
@@ -277,6 +302,7 @@ def async_recognize_speech(file_url, audio_duration, model=RECOGNITION_MODEL):
     except Exception as e:
         logging.error(f"Исключение при асинхронном распознавании: {e}")
         return ""
+
 
 def process_video_file(file_item):
     """
