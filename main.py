@@ -21,7 +21,7 @@ YANDEX_SPEECHKIT_API_KEY = os.environ.get("YANDEX_SPEECHKIT_API_KEY")
 
 SPEECHKIT_ASYNC_URL = "https://transcribe.api.cloud.yandex.net/speech/stt/v2/longRunningRecognize"
 LANGUAGE = "ru-RU"
-RECOGNITION_MODEL = "general"
+RECOGNITION_MODEL = "deferred-general" # 'general' is default
 
 YOBJECT_STORAGE_BUCKET = "video-to-text"
 YOBJECT_STORAGE_ACCESS_KEY = os.environ.get("YOBJECT_STORAGE_ACCESS_KEY")
