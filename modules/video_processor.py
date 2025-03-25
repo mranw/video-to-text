@@ -14,7 +14,7 @@ load_dotenv()
 config = load_config()
 
 YANDEX_DISK_OAUTH_TOKEN = os.environ.get("YANDEX_DISK_OAUTH_TOKEN")
-DISK_FOLDER_PATH = "disk:/Настя Рыбка/Школа Насти Рыбки/1-я ступень"
+DISK_FOLDER_PATH = "disk:/Настя Рыбка/Школа Насти Рыбки/test"  # Указать папку, откуда берем видео
 YANDEX_SPEECHKIT_API_KEY = os.environ.get("YANDEX_SPEECHKIT_API_KEY")
 RECOGNITION_MODEL = "deferred-general"  # Для распознавания в стандартном режиме укажите модель 'general'
 YOBJECT_STORAGE_BUCKET = "video-to-text"
