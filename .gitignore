@@ -174,3 +174,4 @@ cython_debug/
 .pypirc
 
 processed_files.json
+recognized_texts.txt
