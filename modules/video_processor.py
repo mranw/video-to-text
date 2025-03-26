@@ -99,6 +99,9 @@ def list_video_files(folder_path):
     """
     video_files = []
     headers = {"Authorization": f"OAuth {YANDEX_DISK_OAUTH_TOKEN}"}
+    IGNORED_FOLDER_NAME = "СЫРОЙ МАТЕРИАЛ"  # Название папки, которую нужно игнорировать
+    MAX_FILE_SIZE = 45 * 1024 ** 3  # 45 ГБ в байтах
+
     try:
         response = requests.get("https://cloud-api.yandex.net/v1/disk/resources",
                                 params={"path": folder_path, "limit": 1000},
@@ -107,9 +110,15 @@ def list_video_files(folder_path):
             items = response.json().get("_embedded", {}).get("items", [])
             for item in items:
                 if item.get("type") == "dir":
+                    if item.get("name") == IGNORED_FOLDER_NAME:
+                        logging.info(f"Пропуск папки: {item.get('name')}")
+                        continue
                     subfolder = item.get("path")
                     video_files.extend(list_video_files(subfolder))
                 elif item.get("type") == "file" and item.get("mime_type", "").startswith("video/"):
+                    if item.get("size", 0) > MAX_FILE_SIZE:
+                        logging.info(f"Пропуск файла {item.get('name')} (размер {item.get('size')} байт, больше 45 ГБ)")
+                        continue
                     video_files.append(item)
         else:
             logging.error(f"Ошибка получения списка файлов для {folder_path}: {response.text}")
@@ -326,25 +335,95 @@ def async_recognize_speech(file_url, audio_duration, model=RECOGNITION_MODEL):
         return ""
 
 
-def process_video_file(file_item):
+def parse_video_file_path(file_path: str) -> dict:
+    """
+    Извлекает информацию о курсе, разделе и уроке из полного пути видеофайла.
+
+    Структура пути:
+      - Если файл находится непосредственно в папке курса:
+          disk:/Настя Рыбка/Школа Насти Рыбки/Курс А/Video.mp4
+        => {'course': 'Курс А', 'section': None, 'lesson': 'Video.mp4'}
+
+      - Если файл находится в папке-уроке курса (без раздела):
+          disk:/Настя Рыбка/Школа Насти Рыбки/Курс А/Урок 1/Video.mp4
+        => {'course': 'Курс А', 'section': None, 'lesson': 'Урок 1'}
+
+      - Если файл находится в папке раздела:
+          disk:/Настя Рыбка/Школа Насти Рыбки/Курс А/Раздел 1/Урок 2/Video.mp4
+        => {'course': 'Курс А', 'section': 'Раздел 1', 'lesson': 'Урок 2'}
+
+      - Если в папке с уроком присутствуют вложенные папки (например, для частей урока),
+        их названия добавляются к названию урока в виде суффиксов "(1)", "(2)" и т.д.
+          disk:/Настя Рыбка/Школа Насти Рыбки/Курс А/Раздел 1/Урок 3/Подраздел 1/Подраздел 2/Video.mp4
+        => {'course': 'Курс А', 'section': 'Раздел 1', 'lesson': 'Урок 3 (1) (2)'}
+    """
+    parts = file_path.split('/')
+    if len(parts) < 4:
+        return {}
+    course = parts[3]
+    result = {'course': course, 'section': None, 'lesson': None}
+    remaining = parts[4:]
+
+    if not remaining:
+        return result
+
+    if len(remaining) == 1:
+        # Файл лежит непосредственно в папке курса
+        result['lesson'] = remaining[0]
+    elif len(remaining) == 2:
+        # Файл лежит в папке-уроке, без раздела; название урока берем как имя папки
+        result['lesson'] = remaining[0]
+    else:
+        # Если вложенных элементов больше двух:
+        # Считаем первый элемент разделом, второй — базовым названием урока.
+        # Все последующие (кроме последнего, которое является именем файла) считаем вложенными папками,
+        # и к названию урока добавляем суффиксы.
+        result['section'] = remaining[0]
+        base_lesson = remaining[1]
+        # Предполагаем, что последний элемент – это имя файла, поэтому вложенные папки - это элементы от 2 до -1
+        nested = remaining[2:-1]
+        if nested:
+            suffix = " ".join(f"({i + 1})" for i in range(len(nested)))
+            result['lesson'] = f"{base_lesson} {suffix}"
+        else:
+            result['lesson'] = base_lesson
+    return result
+
+
+# Примеры использования:
+paths = [
+    "disk:/Настя Рыбка/Школа Насти Рыбки/Курс А/Video.mp4",
+    "disk:/Настя Рыбка/Школа Насти Рыбки/Курс А/Урок 1/Video.mp4",
+    "disk:/Настя Рыбка/Школа Насти Рыбки/Курс А/Раздел 1/Урок 2/Video.mp4",
+    "disk:/Настя Рыбка/Школа Насти Рыбки/Курс А/Раздел 1/Урок 3/Подраздел 1/Video.mp4",
+    "disk:/Настя Рыбка/Школа Насти Рыбки/Курс А/Раздел 1/Урок 3/Подраздел 1/Подраздел 2/Video.mp4"
+]
+
+for path in paths:
+    info = parse_video_file_path(path)
+    print(f"Путь: {path}")
+    print("Извлеченная информация:", info)
+    print("------")
+
+
+def process_video_file(file_item, audio_queue=None):
     """
     Обрабатывает видеофайл:
       - Скачивает видео,
       - Извлекает аудио и конвертирует его в OGG_OPUS,
-      - Загружает аудио на Object Storage,
-      - Сохраняет метаданные (публичная ссылка и длительность) в режиме deferred-general,
-        либо сразу запускает распознавание в режиме general.
+      - Загружает аудио в Object Storage,
+      - Если RECOGNITION_MODEL == "deferred-general", помещает аудио-метаданные в очередь audio_queue.
     """
     file_path = file_item.get("path")
     if file_path in processed_files:
         logging.info(f"Файл уже обработан: {file_path}")
-        return
+        return ""
     logging.info(f"Начало обработки файла: {file_path}")
 
     download_url = get_download_url(file_path)
     if not download_url:
         logging.error(f"Не удалось получить ссылку для скачивания файла: {file_path}")
-        return
+        return ""
 
     local_video = os.path.join(TEMP_DIR, os.path.basename(file_path))
     local_audio = os.path.splitext(local_video)[0] + ".ogg"
@@ -353,36 +432,36 @@ def process_video_file(file_item):
         logging.info(f"Загрузка видеофайла: {file_path}")
         if not download_file(download_url, local_video):
             logging.error(f"Не удалось скачать файл: {file_path}")
-            return
-        logging.info(f"Видеофайл успешно загружен: {file_path}")
+            return ""
+        logging.info(f"Видео успешно загружено: {file_path}")
 
         logging.info(f"Извлечение аудио из видео: {file_path}")
         if not extract_audio(local_video, local_audio):
             logging.error(f"Не удалось извлечь аудио из файла: {file_path}")
-            return
+            return ""
         logging.info(f"Аудио успешно извлечено: {file_path}")
 
         audio_duration = get_audio_duration(local_audio)
         if not audio_duration:
             logging.error(f"Не удалось получить длительность аудио для файла: {file_path}")
-            return
-        logging.info(f"Длительность аудио: {audio_duration} секунд")
+            return ""
+        logging.info(f"Длительность аудио: {audio_duration} сек")
 
         object_name = os.path.basename(local_audio)
         public_url = upload_to_object_storage(local_audio, object_name)
         if not public_url:
-            logging.error(f"Ошибка загрузки аудио в Yandex Object Storage: {file_path}")
-            return
+            logging.error(f"Ошибка загрузки аудио в Object Storage: {file_path}")
+            return ""
         logging.info(f"Аудио загружено, публичная ссылка: {public_url}")
 
-        if RECOGNITION_MODEL == "deferred-general":
-            # Сохраняем метаданные аудиофайла для последующего параллельного распознавания.
-            metadata = {
-                "file_path": file_path,
+        if RECOGNITION_MODEL == "deferred-general" and audio_queue is not None:
+            metadata = parse_video_file_path(file_path)
+            metadata.update({
                 "public_url": public_url,
-                "audio_duration": audio_duration
-            }
-            audio_metadata_list.append(metadata)
+                "audio_duration": audio_duration,
+                "file_path": file_path
+            })
+            audio_queue.put(metadata)
         else:
             recognized_text = async_recognize_speech(public_url, audio_duration, model=RECOGNITION_MODEL)
             if recognized_text:
