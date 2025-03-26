@@ -17,10 +17,10 @@
 - Обработка полученного текста:
   - Очистка от лишних пробелов, спецсимволов и «шумов».
   - Разбиение на логические фрагменты (по курсам, разделам и урокам) с использованием информации, извлекаемой из путей видеофайлов (функция `parse_video_file_path`).
-  - Структурирование информации в формат «question-answer» с указанием уровня важности (переопределяемый параметром `importance_override`).
+  - Структурирование информации в формат «question-answer» с указанием уровня важности (переопределяемым параметром `importance_override`).
 - Экспорт обработанных данных в базы знаний:
-  - `knowledge_base_high.json` для актуальной (high) информации.
-  - `knowledge_base_low.json` для архивной (low) информации.
+  - `knowledge_base_high.json` – для актуальной (high) информации.
+  - `knowledge_base_low.json` – для архивной (low) информации.
 - Формирование отформатированных текстовых файлов:
   - **formatted_transcript_high.txt** – отформатированный текст для текущих видео.
   - **formatted_transcript_low.txt** – отформатированный текст для архивных уроков.
@@ -32,14 +32,16 @@
 
 ```
 project/
-├── main.py               # Точка входа: объединяет работу всех модулей и обрабатывает оба источника текста
-├── modules/
-│   ├── __init__.py       # Инициализация пакета, агрегирующая основные функции
-│   ├── video_processor.py# Обработка видео: скачивание, извлечение аудио, распознавание, формирование аудио-метаданных с информацией о курсе
-│   ├── text_structurer.py# Очистка и структурирование расшифрованного текста в базу знаний с использованием importance_override
-│   ├── database.py       # Функции для работы с базой знаний (сохранение, обновление, поиск)
-│   └── utils.py          # Вспомогательные функции и конфигурация проекта
-└── requirements.txt      # Зависимости проекта
+└── app/
+    ├── main.py               # Точка входа: объединяет работу всех модулей и обрабатывает оба источника текста
+    ├── .env                  # Файл с переменными окружения (YANDEX_DISK_OAUTH_TOKEN, YANDEX_SPEECHKIT_API_KEY и пр.)
+    ├── requirements.txt      # Зависимости проекта
+    └── modules/              # Пакет с основными модулями проекта
+        ├── __init__.py       # Инициализация пакета, агрегирующая основные функции
+        ├── video_processor.py# Обработка видео: скачивание, извлечение аудио, распознавание, формирование аудио-метаданных с информацией о курсе
+        ├── text_structurer.py# Очистка и структурирование расшифрованного текста в базу знаний с использованием importance_override
+        ├── database.py       # Функции для работы с базой знаний (сохранение, обновление, поиск)
+        └── utils.py          # Вспомогательные функции и конфигурация проекта
 ```
 
 ## Требования
@@ -78,14 +80,14 @@ source venv/bin/activate
 
 ```bash
 pip install --upgrade pip
-pip install -r /path/to/video-to-text/requirements.txt
+pip install -r app/requirements.txt
 ```
 
-> **Примечание:** Замените `/path/to/video-to-text/` на фактический путь к репозиторию.
+> **Примечание:** Замените `app/requirements.txt` на фактический путь к файлу, если структура отличается.
 
 ### 4. Создание и настройка файла `.env`
 
-В корневой директории проекта создайте файл `.env` со следующим содержимым:
+Перейдите в директорию `app` и создайте там файл `.env` со следующим содержимым:
 
 ```ini
 YANDEX_DISK_OAUTH_TOKEN=your_yandex_disk_token
@@ -98,31 +100,31 @@ YOBJECT_STORAGE_SECRET_KEY=your_yandex_object_storage_secret_key
 
 ### 5. Настройка сервиса systemd для автозапуска
 
-Создайте файл сервиса, например, `/etc/systemd/system/video_to_text.service`:
+Создайте файл сервиса, например, `/etc/systemd/system/video_to_text.service`, со следующим содержимым:
 
 ```ini
 [Unit]
-Description=Video to Text Processor & Knowledge Base Builder
+Description=Video-to-Text Processor & Knowledge Base Builder
 After=network.target
 
 [Service]
-ExecStart=/opt/video-to-text/venv/bin/python /path/to/video-to-text/main.py
-WorkingDirectory=/path/to/video-to-text
+ExecStart=/opt/video-to-text/venv/bin/python /opt/video-to-text/app/main.py
+WorkingDirectory=/opt/video-to-text/app
 Restart=always
-User=your_user
-EnvironmentFile=/path/to/video-to-text/.env
+User=mr_anw
+EnvironmentFile=/opt/video-to-text/app/.env
 
 [Install]
 WantedBy=multi-user.target
 ```
 
 > **Примечание:**
-> - Замените `/path/to/video-to-text` на фактический путь к проекту.
-> - Замените `your_user` на имя пользователя, под которым будет запускаться сервис.
+> - Убедитесь, что пути соответствуют реальному расположению проекта: основной скрипт (`main.py`), файл `.env` и файл `requirements.txt` находятся в `app`.
+> - Используйте имя пользователя `mr_anw`, если сервис должен запускаться от его имени.
 
 ### 6. Запуск и проверка сервиса
 
-После настройки сервиса выполните:
+После настройки выполните следующие команды:
 
 ```bash
 sudo systemctl daemon-reload
@@ -130,6 +132,8 @@ sudo systemctl enable video_to_text.service
 sudo systemctl start video_to_text.service
 sudo systemctl status video_to_text.service
 ```
+
+Если сервис запущен, вы увидите статус **Active: active (running)**. Логи работы сервиса будут записываться в файл `video_processor.log`.
 
 ## Работа проекта
 
