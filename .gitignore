@@ -175,3 +175,5 @@ cython_debug/
 
 processed_files.json
 recognized_texts.txt
+raw_transcript.txt
+knowledge_base.json
