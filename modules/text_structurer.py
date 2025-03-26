@@ -1,4 +1,3 @@
-# project/modules/text_structurer.py
 import re
 import json
 import logging
@@ -26,7 +25,9 @@ def structure_text(sections: list) -> list:
     Структурирует текст в список словарей с ключами:
       - question: формируется как первое предложение фрагмента;
       - answer: оставшаяся часть текста;
-      - importance: уровень значимости (high, если присутствует слово "актуально", иначе low).
+      - importance: уровень значимости ("high" или "low").
+
+    По умолчанию определяется на основе наличия слова "актуально", но при override это значение заменяется.
     """
     structured_data = []
     for sec in sections:
@@ -54,7 +55,8 @@ def export_to_json(data: list, filename: str = "knowledge_base.json") -> None:
         logging.error(f"Ошибка сохранения базы знаний: {e}")
 
 
-def process_course_text(raw_text: str, output_filename: str = "knowledge_base.json") -> str:
+def process_course_text(raw_text: str, output_filename: str = "knowledge_base.json",
+                        importance_override: str = None) -> str:
     """
     Полный pipeline обработки текста курса:
       1. Очистка текста,
@@ -62,14 +64,19 @@ def process_course_text(raw_text: str, output_filename: str = "knowledge_base.js
       3. Структурирование,
       4. Экспорт в JSON.
 
+    Если задан параметр importance_override, то для каждого структурированного элемента уровень важности заменяется на это значение.
     Возвращает отформатированный текст для дальнейшего использования или сохранения.
     """
     cleaned = clean_text(raw_text)
     sections = split_into_sections(cleaned)
     structured = structure_text(sections)
+
+    if importance_override is not None:
+        for item in structured:
+            item['importance'] = importance_override
+
     export_to_json(structured, output_filename)
 
-    # Формирование отформатированного текста для сохранения
     formatted_text = "\n\n".join(
         [f"Вопрос: {item['question']}\nОтвет: {item['answer']}\nВажность: {item['importance']}"
          for item in structured]
