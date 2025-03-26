@@ -99,6 +99,9 @@ def list_video_files(folder_path):
     """
     video_files = []
     headers = {"Authorization": f"OAuth {YANDEX_DISK_OAUTH_TOKEN}"}
+    IGNORED_FOLDER_NAME = "СЫРОЙ МАТЕРИАЛ"  # Название папки, которую нужно игнорировать
+    MAX_FILE_SIZE = 45 * 1024 ** 3  # 45 ГБ в байтах
+
     try:
         response = requests.get("https://cloud-api.yandex.net/v1/disk/resources",
                                 params={"path": folder_path, "limit": 1000},
@@ -107,9 +110,15 @@ def list_video_files(folder_path):
             items = response.json().get("_embedded", {}).get("items", [])
             for item in items:
                 if item.get("type") == "dir":
+                    if item.get("name") == IGNORED_FOLDER_NAME:
+                        logging.info(f"Пропуск папки: {item.get('name')}")
+                        continue
                     subfolder = item.get("path")
                     video_files.extend(list_video_files(subfolder))
                 elif item.get("type") == "file" and item.get("mime_type", "").startswith("video/"):
+                    if item.get("size", 0) > MAX_FILE_SIZE:
+                        logging.info(f"Пропуск файла {item.get('name')} (размер {item.get('size')} байт, больше 45 ГБ)")
+                        continue
                     video_files.append(item)
         else:
             logging.error(f"Ошибка получения списка файлов для {folder_path}: {response.text}")
