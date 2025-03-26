@@ -406,24 +406,24 @@ for path in paths:
     print("------")
 
 
-def process_video_file(file_item):
+def process_video_file(file_item, audio_queue=None):
     """
     Обрабатывает видеофайл:
       - Скачивает видео,
       - Извлекает аудио и конвертирует его в OGG_OPUS,
-      - Загружает аудио на Object Storage,
-      - Сохраняет аудио-метаданные, включая извлечённую из пути информацию (курс, раздел, урок, часть).
+      - Загружает аудио в Object Storage,
+      - Если RECOGNITION_MODEL == "deferred-general", помещает аудио-метаданные в очередь audio_queue.
     """
     file_path = file_item.get("path")
     if file_path in processed_files:
         logging.info(f"Файл уже обработан: {file_path}")
-        return
+        return ""
     logging.info(f"Начало обработки файла: {file_path}")
 
     download_url = get_download_url(file_path)
     if not download_url:
         logging.error(f"Не удалось получить ссылку для скачивания файла: {file_path}")
-        return
+        return ""
 
     local_video = os.path.join(TEMP_DIR, os.path.basename(file_path))
     local_audio = os.path.splitext(local_video)[0] + ".ogg"
@@ -432,37 +432,36 @@ def process_video_file(file_item):
         logging.info(f"Загрузка видеофайла: {file_path}")
         if not download_file(download_url, local_video):
             logging.error(f"Не удалось скачать файл: {file_path}")
-            return
-        logging.info(f"Видеофайл успешно загружен: {file_path}")
+            return ""
+        logging.info(f"Видео успешно загружено: {file_path}")
 
         logging.info(f"Извлечение аудио из видео: {file_path}")
         if not extract_audio(local_video, local_audio):
             logging.error(f"Не удалось извлечь аудио из файла: {file_path}")
-            return
+            return ""
         logging.info(f"Аудио успешно извлечено: {file_path}")
 
         audio_duration = get_audio_duration(local_audio)
         if not audio_duration:
             logging.error(f"Не удалось получить длительность аудио для файла: {file_path}")
-            return
+            return ""
         logging.info(f"Длительность аудио: {audio_duration} сек")
 
         object_name = os.path.basename(local_audio)
         public_url = upload_to_object_storage(local_audio, object_name)
         if not public_url:
-            logging.error(f"Ошибка загрузки аудио в Yandex Object Storage: {file_path}")
-            return
+            logging.error(f"Ошибка загрузки аудио в Object Storage: {file_path}")
+            return ""
         logging.info(f"Аудио загружено, публичная ссылка: {public_url}")
 
-        if RECOGNITION_MODEL == "deferred-general":
-            # Извлекаем структуру пути (курс, раздел, урок, часть)
+        if RECOGNITION_MODEL == "deferred-general" and audio_queue is not None:
             metadata = parse_video_file_path(file_path)
-            # Обновляем метаданные аудиофайла дополнительной информацией
             metadata.update({
                 "public_url": public_url,
-                "audio_duration": audio_duration
+                "audio_duration": audio_duration,
+                "file_path": file_path
             })
-            audio_metadata_list.append(metadata)
+            audio_queue.put(metadata)
         else:
             recognized_text = async_recognize_speech(public_url, audio_duration, model=RECOGNITION_MODEL)
             if recognized_text:
