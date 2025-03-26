@@ -337,36 +337,73 @@ def async_recognize_speech(file_url, audio_duration, model=RECOGNITION_MODEL):
 
 def parse_video_file_path(file_path: str) -> dict:
     """
-    Извлекает информацию о курсе, разделе, уроке и части из полного пути видеофайла.
+    Извлекает информацию о курсе, разделе и уроке из полного пути видеофайла.
 
-    Примеры:
-      - "disk:/Настя Рыбка/Школа Насти Рыбки/Курс А/Урок 1.mp4"
-        => {'course': 'Курс А', 'section': None, 'lesson': 'Урок 1', 'part': None}
-      - "disk:/Настя Рыбка/Школа Насти Рыбки/Курс А/Раздел 1/Урок 2.mp4"
-        => {'course': 'Курс А', 'section': 'Раздел 1', 'lesson': 'Урок 2', 'part': None}
-      - "disk:/Настя Рыбка/Школа Насти Рыбки/Курс А/Раздел 1/Урок 3/Часть 1.mp4"
-        => {'course': 'Курс А', 'section': 'Раздел 1', 'lesson': 'Урок 3', 'part': 'Часть 1'}
+    Структура пути:
+      - Если файл находится непосредственно в папке курса:
+          disk:/Настя Рыбка/Школа Насти Рыбки/Курс А/Video.mp4
+        => {'course': 'Курс А', 'section': None, 'lesson': 'Video.mp4'}
+
+      - Если файл находится в папке-уроке курса (без раздела):
+          disk:/Настя Рыбка/Школа Насти Рыбки/Курс А/Урок 1/Video.mp4
+        => {'course': 'Курс А', 'section': None, 'lesson': 'Урок 1'}
+
+      - Если файл находится в папке раздела:
+          disk:/Настя Рыбка/Школа Насти Рыбки/Курс А/Раздел 1/Урок 2/Video.mp4
+        => {'course': 'Курс А', 'section': 'Раздел 1', 'lesson': 'Урок 2'}
+
+      - Если в папке с уроком присутствуют вложенные папки (например, для частей урока),
+        их названия добавляются к названию урока в виде суффиксов "(1)", "(2)" и т.д.
+          disk:/Настя Рыбка/Школа Насти Рыбки/Курс А/Раздел 1/Урок 3/Подраздел 1/Подраздел 2/Video.mp4
+        => {'course': 'Курс А', 'section': 'Раздел 1', 'lesson': 'Урок 3 (1) (2)'}
     """
     parts = file_path.split('/')
     if len(parts) < 4:
         return {}
     course = parts[3]
-    result = {'course': course, 'section': None, 'lesson': None, 'part': None}
+    result = {'course': course, 'section': None, 'lesson': None}
     remaining = parts[4:]
+
     if not remaining:
         return result
+
     if len(remaining) == 1:
+        # Файл лежит непосредственно в папке курса
         result['lesson'] = remaining[0]
     elif len(remaining) == 2:
+        # Файл лежит в папке-уроке, без раздела; название урока берем как имя папки
+        result['lesson'] = remaining[0]
+    else:
+        # Если вложенных элементов больше двух:
+        # Считаем первый элемент разделом, второй — базовым названием урока.
+        # Все последующие (кроме последнего, которое является именем файла) считаем вложенными папками,
+        # и к названию урока добавляем суффиксы.
         result['section'] = remaining[0]
-        result['lesson'] = remaining[1]
-    elif len(remaining) >= 3:
-        result['section'] = remaining[0]
-        result['lesson'] = remaining[1]
-        # Если третий элемент не содержит точки, считаем его именем папки с частью урока
-        if '.' not in remaining[2]:
-            result['part'] = remaining[2]
+        base_lesson = remaining[1]
+        # Предполагаем, что последний элемент – это имя файла, поэтому вложенные папки - это элементы от 2 до -1
+        nested = remaining[2:-1]
+        if nested:
+            suffix = " ".join(f"({i + 1})" for i in range(len(nested)))
+            result['lesson'] = f"{base_lesson} {suffix}"
+        else:
+            result['lesson'] = base_lesson
     return result
+
+
+# Примеры использования:
+paths = [
+    "disk:/Настя Рыбка/Школа Насти Рыбки/Курс А/Video.mp4",
+    "disk:/Настя Рыбка/Школа Насти Рыбки/Курс А/Урок 1/Video.mp4",
+    "disk:/Настя Рыбка/Школа Насти Рыбки/Курс А/Раздел 1/Урок 2/Video.mp4",
+    "disk:/Настя Рыбка/Школа Насти Рыбки/Курс А/Раздел 1/Урок 3/Подраздел 1/Video.mp4",
+    "disk:/Настя Рыбка/Школа Насти Рыбки/Курс А/Раздел 1/Урок 3/Подраздел 1/Подраздел 2/Video.mp4"
+]
+
+for path in paths:
+    info = parse_video_file_path(path)
+    print(f"Путь: {path}")
+    print("Извлеченная информация:", info)
+    print("------")
 
 
 def process_video_file(file_item):
