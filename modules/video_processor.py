@@ -335,14 +335,47 @@ def async_recognize_speech(file_url, audio_duration, model=RECOGNITION_MODEL):
         return ""
 
 
+def parse_video_file_path(file_path: str) -> dict:
+    """
+    Извлекает информацию о курсе, разделе, уроке и части из полного пути видеофайла.
+
+    Примеры:
+      - "disk:/Настя Рыбка/Школа Насти Рыбки/Курс А/Урок 1.mp4"
+        => {'course': 'Курс А', 'section': None, 'lesson': 'Урок 1', 'part': None}
+      - "disk:/Настя Рыбка/Школа Насти Рыбки/Курс А/Раздел 1/Урок 2.mp4"
+        => {'course': 'Курс А', 'section': 'Раздел 1', 'lesson': 'Урок 2', 'part': None}
+      - "disk:/Настя Рыбка/Школа Насти Рыбки/Курс А/Раздел 1/Урок 3/Часть 1.mp4"
+        => {'course': 'Курс А', 'section': 'Раздел 1', 'lesson': 'Урок 3', 'part': 'Часть 1'}
+    """
+    parts = file_path.split('/')
+    if len(parts) < 4:
+        return {}
+    course = parts[3]
+    result = {'course': course, 'section': None, 'lesson': None, 'part': None}
+    remaining = parts[4:]
+    if not remaining:
+        return result
+    if len(remaining) == 1:
+        result['lesson'] = remaining[0]
+    elif len(remaining) == 2:
+        result['section'] = remaining[0]
+        result['lesson'] = remaining[1]
+    elif len(remaining) >= 3:
+        result['section'] = remaining[0]
+        result['lesson'] = remaining[1]
+        # Если третий элемент не содержит точки, считаем его именем папки с частью урока
+        if '.' not in remaining[2]:
+            result['part'] = remaining[2]
+    return result
+
+
 def process_video_file(file_item):
     """
     Обрабатывает видеофайл:
       - Скачивает видео,
       - Извлекает аудио и конвертирует его в OGG_OPUS,
       - Загружает аудио на Object Storage,
-      - Сохраняет метаданные (публичная ссылка и длительность) в режиме deferred-general,
-        либо сразу запускает распознавание в режиме general.
+      - Сохраняет аудио-метаданные, включая извлечённую из пути информацию (курс, раздел, урок, часть).
     """
     file_path = file_item.get("path")
     if file_path in processed_files:
@@ -375,7 +408,7 @@ def process_video_file(file_item):
         if not audio_duration:
             logging.error(f"Не удалось получить длительность аудио для файла: {file_path}")
             return
-        logging.info(f"Длительность аудио: {audio_duration} секунд")
+        logging.info(f"Длительность аудио: {audio_duration} сек")
 
         object_name = os.path.basename(local_audio)
         public_url = upload_to_object_storage(local_audio, object_name)
@@ -385,12 +418,13 @@ def process_video_file(file_item):
         logging.info(f"Аудио загружено, публичная ссылка: {public_url}")
 
         if RECOGNITION_MODEL == "deferred-general":
-            # Сохраняем метаданные аудиофайла для последующего параллельного распознавания.
-            metadata = {
-                "file_path": file_path,
+            # Извлекаем структуру пути (курс, раздел, урок, часть)
+            metadata = parse_video_file_path(file_path)
+            # Обновляем метаданные аудиофайла дополнительной информацией
+            metadata.update({
                 "public_url": public_url,
                 "audio_duration": audio_duration
-            }
+            })
             audio_metadata_list.append(metadata)
         else:
             recognized_text = async_recognize_speech(public_url, audio_duration, model=RECOGNITION_MODEL)
