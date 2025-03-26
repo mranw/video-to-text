@@ -9,25 +9,27 @@ import boto3
 from botocore.exceptions import ClientError
 from dotenv import load_dotenv
 from modules.utils import load_config
+import concurrent.futures
 
 load_dotenv()
 config = load_config()
 
 YANDEX_DISK_OAUTH_TOKEN = os.environ.get("YANDEX_DISK_OAUTH_TOKEN")
-DISK_FOLDER_PATH = "disk:/Настя Рыбка/Школа Насти Рыбки/test"  # Указать папку, откуда берем видео
+DISK_FOLDER_PATH = config.get("DISK_FOLDER_PATH")
 YANDEX_SPEECHKIT_API_KEY = os.environ.get("YANDEX_SPEECHKIT_API_KEY")
-RECOGNITION_MODEL = "deferred-general"  # Для распознавания в стандартном режиме укажите модель 'general'
-YOBJECT_STORAGE_BUCKET = "video-to-text"
+RECOGNITION_MODEL = config.get("RECOGNITION_MODEL", "general")
+YOBJECT_STORAGE_BUCKET = config.get("YOBJECT_STORAGE_BUCKET")
 YOBJECT_STORAGE_ACCESS_KEY = os.environ.get("YOBJECT_STORAGE_ACCESS_KEY")
 YOBJECT_STORAGE_SECRET_KEY = os.environ.get("YOBJECT_STORAGE_SECRET_KEY")
-YOBJECT_STORAGE_ENDPOINT = "https://storage.yandexcloud.net"
-SPEECHKIT_ASYNC_URL = "https://transcribe.api.cloud.yandex.net/speech/stt/v2/longRunningRecognize"
-LANGUAGE = "ru-RU"
+YOBJECT_STORAGE_ENDPOINT = config.get("YOBJECT_STORAGE_ENDPOINT")
+SPEECHKIT_ASYNC_URL = config.get("SPEECHKIT_ASYNC_URL")
+LANGUAGE = config.get("LANGUAGE", "ru-RU")
 
 # Параметры и настройки
 PROCESSED_FILES_RECORD = "processed_files.json"
+AUDIO_METADATA_FILE = "audio_files.json"  # Файл для сохранения информации об аудиофайлах
 TEMP_DIR = "temp"
-SCAN_INTERVAL = 43200
+SCAN_INTERVAL = 43200  # 12 часов
 
 # ====== Настройка логирования ======
 logging.basicConfig(filename='video_processor.log',
@@ -68,8 +70,26 @@ def save_processed_files(processed):
     except Exception as e:
         logging.error(f"Ошибка сохранения обработанных файлов: {e}")
 
+def save_audio_metadata(metadata_list):
+    try:
+        with open(AUDIO_METADATA_FILE, "w", encoding="utf-8") as f:
+            json.dump(metadata_list, f, ensure_ascii=False, indent=4)
+        logging.info("Аудио метаданные успешно сохранены.")
+    except Exception as e:
+        logging.error(f"Ошибка сохранения аудио метаданных: {e}")
+
+def load_audio_metadata():
+    try:
+        with open(AUDIO_METADATA_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        logging.error(f"Ошибка загрузки аудио метаданных: {e}")
+        return []
+
 
 processed_files = load_processed_files()
+# Глобальный список для хранения метаданных аудиофайлов в режиме deferred-general
+audio_metadata_list = []
 
 
 def list_video_files(folder_path):
@@ -106,8 +126,7 @@ def get_download_url(file_path):
                                 params={"path": file_path},
                                 headers=headers)
         if response.status_code == 200:
-            data = response.json()
-            return data.get("href")
+            return response.json().get("href")
         else:
             logging.error(f"Ошибка получения ссылки для {file_path}: {response.text}")
             return None
@@ -119,6 +138,7 @@ def get_download_url(file_path):
 def download_file(url, local_path):
     """Скачивает файл по указанной ссылке и сохраняет его локально."""
     try:
+        logging.info(f"Начало загрузки файла: {local_path}")
         with requests.get(url, stream=True) as r:
             r.raise_for_status()
             total_size = int(r.headers.get('content-length', 0))  # Получаем размер файла, если он доступен
@@ -161,7 +181,7 @@ def extract_audio(video_path, audio_path):
     """
     try:
         command = [
-            "ffmpeg", "-i", video_path, "-vn",
+            "ffmpeg", "-y", "-i", video_path, "-vn",
             "-c:a", "libopus", "-b:a", "64k",
             "-ac", "1",  # Принудительное преобразование в моно
             audio_path
@@ -190,7 +210,7 @@ def get_audio_duration(file_path):
         ]
         result = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         duration_str = result.stdout.strip()
-        return float(duration_str)
+        return float(duration_str) if duration_str else None
     except Exception as e:
         logging.error(f"Ошибка получения длительности аудио {file_path}: {e}")
         return None
@@ -277,10 +297,10 @@ def async_recognize_speech(file_url, audio_duration, model=RECOGNITION_MODEL):
                 return ""
             time.sleep(sleep_interval)
             op_response = requests.get(op_url, headers=headers)
-            logging.debug(f"HTTP статус запроса статуса: {op_response.status_code}")
-            logging.debug(f"Ответ статуса операции (GET): {op_response.text}")
+            logging.debug(f"HTTP статус: {op_response.status_code}")
+            logging.debug(f"Ответ статуса: {op_response.text}")
             if op_response.status_code != 200:
-                logging.error(f"Ошибка получения статуса операции (HTTP {op_response.status_code}): {op_response.text}")
+                logging.error(f"Ошибка получения статуса (HTTP {op_response.status_code}): {op_response.text}")
                 continue
             op_data = op_response.json()
             if op_data.get("done"):
@@ -309,14 +329,11 @@ def async_recognize_speech(file_url, audio_duration, model=RECOGNITION_MODEL):
 def process_video_file(file_item):
     """
     Обрабатывает видеофайл:
-      - Получает ссылку для скачивания;
-      - Скачивает видео;
-      - Извлекает аудио, конвертирует в OGG_OPUS с моно каналом;
-      - Получает длительность аудио;
-      - Загружает аудио в Yandex Object Storage;
-      - Отправляет запрос на асинхронное распознавание;
-      - Сохраняет распознанный текст;
-      - Отмечает файл как обработанный.
+      - Скачивает видео,
+      - Извлекает аудио и конвертирует его в OGG_OPUS,
+      - Загружает аудио на Object Storage,
+      - Сохраняет метаданные (публичная ссылка и длительность) в режиме deferred-general,
+        либо сразу запускает распознавание в режиме general.
     """
     file_path = file_item.get("path")
     if file_path in processed_files:
@@ -333,17 +350,17 @@ def process_video_file(file_item):
     local_audio = os.path.splitext(local_video)[0] + ".ogg"
 
     try:
-        logging.info(f"Начало загрузки видеофайла: {file_path}")
+        logging.info(f"Загрузка видеофайла: {file_path}")
         if not download_file(download_url, local_video):
             logging.error(f"Не удалось скачать файл: {file_path}")
             return
         logging.info(f"Видеофайл успешно загружен: {file_path}")
 
-        logging.info(f"Начало извлечения аудио из видеофайла: {file_path}")
+        logging.info(f"Извлечение аудио из видео: {file_path}")
         if not extract_audio(local_video, local_audio):
             logging.error(f"Не удалось извлечь аудио из файла: {file_path}")
             return
-        logging.info(f"Аудио успешно извлечено из видеофайла: {file_path}")
+        logging.info(f"Аудио успешно извлечено: {file_path}")
 
         audio_duration = get_audio_duration(local_audio)
         if not audio_duration:
@@ -352,26 +369,30 @@ def process_video_file(file_item):
         logging.info(f"Длительность аудио: {audio_duration} секунд")
 
         object_name = os.path.basename(local_audio)
-        logging.info(f"Начало загрузки аудио в Yandex Object Storage: {object_name}")
         public_url = upload_to_object_storage(local_audio, object_name)
         if not public_url:
-            logging.error(f"Ошибка загрузки аудио в Yandex Object Storage для файла: {file_path}")
+            logging.error(f"Ошибка загрузки аудио в Yandex Object Storage: {file_path}")
             return
-        logging.info(f"Аудио успешно загружено, публичная ссылка: {public_url}")
+        logging.info(f"Аудио загружено, публичная ссылка: {public_url}")
 
-        logging.info(f"Начало распознавания аудио: {file_path}")
-        recognized_text = async_recognize_speech(public_url, audio_duration, model=RECOGNITION_MODEL)
-        if recognized_text:
-            # entry = f"\n=== Файл: {file_path} ===\nРаспознанный текст:\n{recognized_text}\n"
-            # with open(OUTPUT_TEXT_FILE, 'a', encoding='utf-8') as f:
-            #     f.write(entry)
-            logging.info(f"Распознавание успешно для файла: {file_path}")
+        if RECOGNITION_MODEL == "deferred-general":
+            # Сохраняем метаданные аудиофайла для последующего параллельного распознавания.
+            metadata = {
+                "file_path": file_path,
+                "public_url": public_url,
+                "audio_duration": audio_duration
+            }
+            audio_metadata_list.append(metadata)
         else:
-            logging.error(f"Распознавание не вернуло текст для файла: {file_path}")
+            recognized_text = async_recognize_speech(public_url, audio_duration, model=RECOGNITION_MODEL)
+            if recognized_text:
+                logging.info(f"Распознавание успешно для файла: {file_path}")
+            else:
+                logging.error(f"Распознавание не вернуло текст для файла: {file_path}")
 
         processed_files[file_path] = True
         save_processed_files(processed_files)
-        return recognized_text
+        return ""
     except Exception as e:
         logging.error(f"Исключение при обработке файла {file_path}: {e}")
         return ""
@@ -384,12 +405,40 @@ def process_video_file(file_item):
                     logging.error(f"Не удалось удалить временный файл {temp_file}: {e}")
 
 
+def process_deferred_recognition(metadata_list):
+    """
+    Отправляет запросы асинхронного распознавания для всех аудиофайлов в режиме deferred-general параллельно.
+    """
+    recognized_texts = []
+
+    def recognize(metadata):
+        public_url = metadata["public_url"]
+        audio_duration = metadata["audio_duration"]
+        result = async_recognize_speech(public_url, audio_duration, model="deferred-general")
+        return result
+
+    with concurrent.futures.ThreadPoolExecutor() as executor:
+        futures = [executor.submit(recognize, md) for md in metadata_list]
+        for future in concurrent.futures.as_completed(futures):
+            result = future.result()
+            if result:
+                recognized_texts.append(result)
+    return recognized_texts
+
+
 def process_all_videos():
-    all_texts = []
+    global audio_metadata_list
+    audio_metadata_list = []  # Сброс списка метаданных
     video_files = list_video_files(DISK_FOLDER_PATH)
     logging.info(f"Найдено видеофайлов: {len(video_files)}")
     for file_item in video_files:
-        recognized_text = process_video_file(file_item)
-        if recognized_text:
-            all_texts.append(recognized_text)
-    return "\n".join(all_texts)
+        process_video_file(file_item)
+    if RECOGNITION_MODEL == "deferred-general":
+        # Сохраняем метаданные аудиофайлов для аудита и контроля.
+        save_audio_metadata(audio_metadata_list)
+        # Отправляем запросы на распознавание параллельно.
+        recognized_texts = process_deferred_recognition(audio_metadata_list)
+        return "\n".join(recognized_texts)
+    else:
+        # В режиме general распознавание происходило сразу.
+        return ""

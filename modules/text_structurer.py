@@ -1,3 +1,4 @@
+# project/modules/text_structurer.py
 import re
 import json
 import logging
@@ -16,7 +17,7 @@ def split_into_sections(text: str) -> list:
     """
     Разбивает текст на логические фрагменты с использованием маркеров "Раздел:" и "Урок:".
     """
-    sections = re.split(r'(?:Раздел:|Урок:)', text)
+    sections = re.split(r'Раздел:|Урок:', text)
     return [sec.strip() for sec in sections if sec.strip()]
 
 
@@ -53,15 +54,24 @@ def export_to_json(data: list, filename: str = "knowledge_base.json") -> None:
         logging.error(f"Ошибка сохранения базы знаний: {e}")
 
 
-def process_course_text(raw_text: str, output_filename: str = "knowledge_base.json") -> None:
+def process_course_text(raw_text: str, output_filename: str = "knowledge_base.json") -> str:
     """
     Полный pipeline обработки текста курса:
       1. Очистка текста,
       2. Разбиение на секции,
       3. Структурирование,
       4. Экспорт в JSON.
+
+    Возвращает отформатированный текст для дальнейшего использования или сохранения.
     """
     cleaned = clean_text(raw_text)
     sections = split_into_sections(cleaned)
     structured = structure_text(sections)
     export_to_json(structured, output_filename)
+
+    # Формирование отформатированного текста для сохранения
+    formatted_text = "\n\n".join(
+        [f"Вопрос: {item['question']}\nОтвет: {item['answer']}\nВажность: {item['importance']}"
+         for item in structured]
+    )
+    return formatted_text
