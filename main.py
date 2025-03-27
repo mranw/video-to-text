@@ -1,7 +1,11 @@
+import log_config  # Выполняет настройку логирования (не используется напрямую) # noqa: F401
+
 import threading
 import time
 from queue import Queue
 import logging
+from concurrent.futures import ThreadPoolExecutor
+
 from modules.video_processor import (
     list_video_files,
     process_video_file,
@@ -10,8 +14,6 @@ from modules.video_processor import (
     load_audio_queue,
     save_audio_queue
 )
-
-from concurrent.futures import ThreadPoolExecutor
 
 # Создаём потокобезопасную очередь для метаданных аудиофайлов
 audio_queue = Queue()
@@ -91,15 +93,6 @@ def transcription_processing_thread():
 
 
 if __name__ == "__main__":
-    logging.basicConfig(
-        level=logging.INFO,
-        format="%(asctime)s - %(levelname)s - %(message)s",
-        handlers=[
-            logging.FileHandler("main.log", encoding='utf-8'),
-            logging.StreamHandler()  # Опционально: вывод в консоль
-        ]
-    )
-
     # Запуск потоков обработки видео и расшифровки аудио
     video_thread = threading.Thread(target=video_processing_thread, daemon=True)
     transcription_thread = threading.Thread(target=transcription_processing_thread, daemon=True)
