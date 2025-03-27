@@ -87,15 +87,21 @@ pip install -r app/requirements.txt
 
 ### 4. Создание и настройка файла `.env`
 
-Перейдите в директорию `app` и создайте там файл `.env` со следующим содержимым:
+Перейдите в основную директорию скрипта и создайте там файл `.env` со следующим содержимым:
 
 ```ini
+DISK_FOLDER_PATH=disk:/Папка
+RECOGNITION_MODEL=general
+LANGUAGE=ru-RU
+
 YANDEX_DISK_OAUTH_TOKEN=your_yandex_disk_token
 YANDEX_SPEECHKIT_API_KEY=your_speechkit_api_key
 # Если используется IAM-токен для SpeechKit, укажите его:
 YANDEX_SPEECHKIT_IAM_TOKEN=your_service_account_iam_token
 YOBJECT_STORAGE_ACCESS_KEY=your_yandex_object_storage_access_key
 YOBJECT_STORAGE_SECRET_KEY=your_yandex_object_storage_secret_key
+YOBJECT_STORAGE_ENDPOINT=https://storage.yandexcloud.net
+SPEECHKIT_ASYNC_URL=https://transcribe.api.cloud.yandex.net/speech/stt/v2/longRunningRecognize
 ```
 
 ### 5. Настройка сервиса systemd для автозапуска
@@ -108,19 +114,15 @@ Description=Video-to-Text Processor & Knowledge Base Builder
 After=network.target
 
 [Service]
-ExecStart=/opt/video-to-text/venv/bin/python /opt/video-to-text/app/main.py
-WorkingDirectory=/opt/video-to-text/app
+ExecStart=/opt/video-to-text/venv/bin/python /opt/video-to-text/main.py
+WorkingDirectory=/opt/video-to-text
 Restart=always
 User=mr_anw
-EnvironmentFile=/opt/video-to-text/app/.env
+EnvironmentFile=/opt/video-to-text/.env
 
 [Install]
 WantedBy=multi-user.target
 ```
-
-> **Примечание:**
-> - Убедитесь, что пути соответствуют реальному расположению проекта: основной скрипт (`main.py`), файл `.env` и файл `requirements.txt` находятся в `app`.
-> - Используйте имя пользователя `mr_anw`, если сервис должен запускаться от его имени.
 
 ### 6. Запуск и проверка сервиса
 
