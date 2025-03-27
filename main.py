@@ -45,6 +45,7 @@ def process_transcription(metadata):
     """
     Отправляет запрос асинхронного распознавания для одного аудиофайла и
     после успешного получения результата удаляет элемент из persistent-хранилища.
+    Сохраняет полученный сырой текст в файл raw_transcript.txt.
     """
     public_url = metadata.get("public_url")
     audio_duration = metadata.get("audio_duration")
@@ -52,11 +53,20 @@ def process_transcription(metadata):
     recognized_text = async_recognize_speech(public_url, audio_duration, model="deferred-general")
     if recognized_text:
         logging.info(f"Распознавание для файла {file_path} завершено. Результат: {recognized_text}")
+
+        # Сохраняем сырой текст в файл raw_transcript.txt (в режиме append)
+        try:
+            with open("raw_transcript.txt", "a", encoding="utf-8") as f:
+                f.write(f"=== Файл: {file_path} ===\n")
+                f.write("Распознанный текст:\n")
+                f.write(recognized_text + "\n\n")
+        except Exception as e:
+            logging.error(f"Ошибка сохранения raw транскрипта для файла {file_path}: {e}")
+
         # После успешного распознавания удаляем элемент из persistent-хранилища
         current_items = load_audio_queue()
         updated_items = [item for item in current_items if item.get("file_path") != file_path]
         save_audio_queue(updated_items)
-        # TODO Здесь можно сохранить результат в файл или базу данных
     else:
         logging.error(f"Распознавание для файла {file_path} не дало результата.")
     return recognized_text
