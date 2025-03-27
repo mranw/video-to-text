@@ -27,14 +27,14 @@ LANGUAGE = config.get("LANGUAGE", "ru-RU")
 
 # Параметры и настройки
 PROCESSED_FILES_RECORD = "processed_files.json"
-AUDIO_METADATA_FILE = "audio_files.json"  # Файл для сохранения информации об аудиофайлах
+AUDIO_QUEUE_FILE = "audio_queue.json"
 TEMP_DIR = "temp"
 SCAN_INTERVAL = 43200  # 12 часов
 
 # ====== Настройка логирования ======
-logging.basicConfig(filename='video_processor.log',
-                    level=logging.INFO,
-                    format='%(asctime)s - %(levelname)s - %(message)s')
+# logging.basicConfig(filename='video_processor.log',
+#                     level=logging.INFO,
+#                     format='%(asctime)s - %(levelname)s - %(message)s')
 
 if not os.path.exists(TEMP_DIR):
     os.makedirs(TEMP_DIR)
@@ -70,21 +70,30 @@ def save_processed_files(processed):
     except Exception as e:
         logging.error(f"Ошибка сохранения обработанных файлов: {e}")
 
-def save_audio_metadata(metadata_list):
-    try:
-        with open(AUDIO_METADATA_FILE, "w", encoding="utf-8") as f:
-            json.dump(metadata_list, f, ensure_ascii=False, indent=4)
-        logging.info("Аудио метаданные успешно сохранены.")
-    except Exception as e:
-        logging.error(f"Ошибка сохранения аудио метаданных: {e}")
 
-def load_audio_metadata():
+def load_audio_queue() -> list:
+    """
+    Загружает сохранённые аудио-метаданные из файла AUDIO_QUEUE_FILE.
+    Если файл не найден или произошла ошибка, возвращает пустой список.
+    """
     try:
-        with open(AUDIO_METADATA_FILE, "r", encoding="utf-8") as f:
+        with open(AUDIO_QUEUE_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
     except Exception as e:
-        logging.error(f"Ошибка загрузки аудио метаданных: {e}")
+        logging.error(f"Ошибка загрузки аудио-метаданных. Файл {AUDIO_QUEUE_FILE} не найден или пуст: {e}")
         return []
+
+
+def save_audio_queue(queue_items: list) -> None:
+    """
+    Сохраняет текущий список аудио-метаданных в файл AUDIO_QUEUE_FILE.
+    """
+    try:
+        with open(AUDIO_QUEUE_FILE, "w", encoding="utf-8") as f:
+            json.dump(queue_items, f, ensure_ascii=False, indent=4)
+        logging.info("Аудио метаданные успешно сохранены.")
+    except Exception as e:
+        logging.error(f"Ошибка сохранения файла аудио-метаданных: {e}")
 
 
 processed_files = load_processed_files()
@@ -257,8 +266,9 @@ def async_recognize_speech(file_url, audio_duration, model=RECOGNITION_MODEL):
         "config": {
             "specification": {
                 "languageCode": LANGUAGE,
-                "model": model
-            },
+                "model": model,
+                "rawResults": 'true'  # Флаг, указывающий, как писать числа
+            },                        # false (по умолчанию) — писать цифрами; true — писать прописью
             "audioEncoding": "OGG_OPUS"
         },
         "audio": {
@@ -330,9 +340,14 @@ def async_recognize_speech(file_url, audio_duration, model=RECOGNITION_MODEL):
                     return ""
             else:
                 logging.info("Операция не завершена, ожидаем следующий опрос...")
-    except Exception as e:
-        logging.error(f"Исключение при асинхронном распознавании: {e}")
-        return ""
+    except requests.exceptions.HTTPError as e:
+        if e.response.status_code == 429:  # Too Many Requests
+            logging.warning("Превышен лимит запросов. Пауза 1 час.")
+            time.sleep(3600)
+            return async_recognize_speech(file_url, audio_duration, model=model)  # Рекурсивный повтор
+        else:
+            raise
+
 
 
 def parse_video_file_path(file_path: str) -> dict:
@@ -360,6 +375,9 @@ def parse_video_file_path(file_path: str) -> dict:
     parts = file_path.split('/')
     if len(parts) < 4:
         return {}
+    # Добавьте обработку нестандартных случаев
+    if "СЫРОЙ МАТЕРИАЛ" in parts:
+        return {}  # Пропустить ненужные папки
     course = parts[3]
     result = {'course': course, 'section': None, 'lesson': None}
     remaining = parts[4:]
@@ -413,6 +431,7 @@ def process_video_file(file_item, audio_queue=None):
       - Извлекает аудио и конвертирует его в OGG_OPUS,
       - Загружает аудио в Object Storage,
       - Если RECOGNITION_MODEL == "deferred-general", помещает аудио-метаданные в очередь audio_queue.
+        и обновляет persistent-хранилище.
     """
     file_path = file_item.get("path")
     if file_path in processed_files:
@@ -461,7 +480,12 @@ def process_video_file(file_item, audio_queue=None):
                 "audio_duration": audio_duration,
                 "file_path": file_path
             })
+            # Добавляем элемент в in-memory очередь
             audio_queue.put(metadata)
+            # Загружаем текущий persistent список, добавляем новый элемент и сохраняем
+            current_items = load_audio_queue()
+            current_items.append(metadata)
+            save_audio_queue(current_items)
         else:
             recognized_text = async_recognize_speech(public_url, audio_duration, model=RECOGNITION_MODEL)
             if recognized_text:
@@ -514,7 +538,7 @@ def process_all_videos():
         process_video_file(file_item)
     if RECOGNITION_MODEL == "deferred-general":
         # Сохраняем метаданные аудиофайлов для аудита и контроля.
-        save_audio_metadata(audio_metadata_list)
+        save_audio_queue(audio_metadata_list)
         # Отправляем запросы на распознавание параллельно.
         recognized_texts = process_deferred_recognition(audio_metadata_list)
         return "\n".join(recognized_texts)
