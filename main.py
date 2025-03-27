@@ -71,8 +71,10 @@ def transcription_processing_thread():
         while True:
             if not audio_queue.empty():
                 metadata = audio_queue.get()
-                executor.submit(process_transcription, metadata).add_done_callback(
-                    lambda future: logging.error(f"Ошибка: {future.exception()}") if future.exception() else None
+                future = executor.submit(process_transcription, metadata)
+                future.add_done_callback(
+                    lambda f: logging.error(
+                        f"Ошибка в процессе расшифровки: {f.exception()}") if f.exception() else None
                 )
             else:
                 time.sleep(10)

@@ -316,6 +316,13 @@ def async_recognize_speech(file_url, audio_duration, model=RECOGNITION_MODEL):
                 return ""
             time.sleep(sleep_interval)
             op_response = requests.get(op_url, headers=headers)
+
+            # Обработка превышения лимита запросов
+            if op_response.status_code == 429:
+                logging.warning("Превышен лимит запросов на проверку статуса (HTTP 429). Пауза на 1 час.")
+                time.sleep(3600)
+                continue
+
             logging.debug(f"HTTP статус: {op_response.status_code}")
             logging.debug(f"Ответ статуса: {op_response.text}")
             if op_response.status_code != 200:
@@ -341,12 +348,8 @@ def async_recognize_speech(file_url, audio_duration, model=RECOGNITION_MODEL):
             else:
                 logging.info("Операция не завершена, ожидаем следующий опрос...")
     except requests.exceptions.HTTPError as e:
-        if e.response.status_code == 429:  # Too Many Requests
-            logging.warning("Превышен лимит запросов. Пауза 1 час.")
-            time.sleep(3600)
-            return async_recognize_speech(file_url, audio_duration, model=model)  # Рекурсивный повтор
-        else:
-            raise
+        logging.error(f"Исключение при асинхронном распознавании: {e}")
+        return ""
 
 
 
