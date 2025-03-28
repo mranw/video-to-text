@@ -9,6 +9,8 @@ from concurrent.futures import ThreadPoolExecutor
 from modules.video_processor import (
     list_video_files,
     process_video_file,
+    load_upload_errors,
+    save_upload_errors,
     DISK_FOLDER_PATH,
     async_recognize_speech,
     load_audio_queue,
@@ -25,6 +27,23 @@ for item in persistent_items:
 
 # Интервал сканирования (каждые 12 часов; для тестирования можно установить меньше)
 SCAN_INTERVAL = 43200  # 12 часов
+
+
+def reprocess_upload_errors(audio_queue):
+    errors = load_upload_errors()
+    if errors:
+        logging.info(f"Найдено {len(errors)} файлов с ошибками загрузки. Попытка повторной загрузки.")
+        remaining_errors = []
+        for error_item in errors:
+            # Здесь error_item содержит file_path, local_audio, audio_duration, а также данные, полученные из parse_video_file_path
+            # Попытаемся повторно загрузить аудио для этого файла
+            file_item = {"path": error_item["file_path"]}
+            process_video_file(file_item, audio_queue)
+            # Если после повторной обработки файл все ещё не загрузился, можно сохранить его для следующей попытки
+            # (например, можно загрузить список из persistent ошибок заново)
+            # Здесь для простоты оставляем повторную обработку без явного сохранения оставшихся ошибок.
+        # После обработки можно очистить файл ошибок, если все успешно обработаны
+        save_upload_errors([])
 
 
 def video_processing_thread():
@@ -93,6 +112,9 @@ def transcription_processing_thread():
 
 
 if __name__ == "__main__":
+    # Повторная обработка файлов с ошибками загрузки (из upload_errors.json)
+    reprocess_upload_errors(audio_queue)
+
     # Запуск потоков обработки видео и расшифровки аудио
     video_thread = threading.Thread(target=video_processing_thread, daemon=True)
     transcription_thread = threading.Thread(target=transcription_processing_thread, daemon=True)

@@ -27,6 +27,7 @@ LANGUAGE = config.get("LANGUAGE", "ru-RU")
 
 # Параметры и настройки
 PROCESSED_FILES_RECORD = "processed_files.json"
+UPLOAD_ERRORS_FILE = "upload_errors.json"
 AUDIO_QUEUE_FILE = "audio_queue.json"
 TEMP_DIR = "temp"
 SCAN_INTERVAL = 43200  # 12 часов
@@ -48,6 +49,31 @@ s3_client = boto3.client('s3',
                          endpoint_url=YOBJECT_STORAGE_ENDPOINT,
                          aws_access_key_id=YOBJECT_STORAGE_ACCESS_KEY,
                          aws_secret_access_key=YOBJECT_STORAGE_SECRET_KEY)
+
+
+def load_upload_errors() -> list:
+    """
+    Загружает список аудио-метаданных с ошибками загрузки из UPLOAD_ERRORS_FILE.
+    Если файл не найден или произошла ошибка, возвращает пустой список.
+    """
+    try:
+        with open(UPLOAD_ERRORS_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    except Exception as e:
+        logging.error(f"Ошибка загрузки ошибок загрузки. Файл {UPLOAD_ERRORS_FILE} не найден или пуст: {e}")
+        return []
+
+
+def save_upload_errors(errors_list: list) -> None:
+    """
+    Сохраняет текущий список аудио-метаданных с ошибками загрузки в UPLOAD_ERRORS_FILE.
+    """
+    try:
+        with open(UPLOAD_ERRORS_FILE, "w", encoding="utf-8") as f:
+            json.dump(errors_list, f, ensure_ascii=False, indent=4)
+        logging.info("Ошибки загрузки успешно сохранены.")
+    except Exception as e:
+        logging.error(f"Ошибка сохранения файла ошибок загрузки: {e}")
 
 
 def load_processed_files():
@@ -473,6 +499,16 @@ def process_video_file(file_item, audio_queue=None):
         public_url = upload_to_object_storage(local_audio, object_name)
         if not public_url:
             logging.error(f"Ошибка загрузки аудио в Object Storage: {file_path}")
+            # Сохраняем metadata в persistent-хранилище ошибок для повторной обработки
+            error_item = parse_video_file_path(file_path)
+            error_item.update({
+                "file_path": file_path,
+                "local_audio": local_audio,
+                "audio_duration": audio_duration
+            })
+            current_errors = load_upload_errors()
+            current_errors.append(error_item)
+            save_upload_errors(current_errors)
             return ""
         logging.info(f"Аудио загружено, публичная ссылка: {public_url}")
 
