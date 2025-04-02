@@ -98,7 +98,7 @@ def transcription_processing_thread():
     Поток, который постоянно проверяет очередь audio_queue и параллельно отправляет
     запросы на расшифровку для каждого найденного аудиофайла.
     """
-    with ThreadPoolExecutor(max_workers=5) as executor:
+    with ThreadPoolExecutor(max_workers=30) as executor:
         while True:
             if not audio_queue.empty():
                 metadata = audio_queue.get()
