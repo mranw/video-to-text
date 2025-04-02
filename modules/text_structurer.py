@@ -83,6 +83,7 @@ def process_course_text(raw_text: str, output_filename: str = "knowledge_base.js
     )
     return formatted_text
 
+
 if __name__ == "__main__":
     # Читаем сырой текст из файла, например, raw_transcript.txt
     try:
