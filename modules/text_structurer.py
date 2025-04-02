@@ -82,3 +82,22 @@ def process_course_text(raw_text: str, output_filename: str = "knowledge_base.js
          for item in structured]
     )
     return formatted_text
+
+if __name__ == "__main__":
+    # Читаем сырой текст из файла, например, raw_transcript.txt
+    try:
+        with open("raw_transcript.txt", "r", encoding="utf-8") as f:
+            raw_text = f.read()
+    except Exception as e:
+        print(f"Ошибка чтения файла raw_transcript.txt: {e}")
+        exit(1)
+
+    # Обрабатываем текст: очищаем, разбиваем на секции, структурируем и экспортируем базу знаний
+    formatted_text = process_course_text(raw_text, output_filename="knowledge_base.json")
+
+    # Сохраняем отформатированный текст в файл для дальнейшего использования
+    try:
+        with open("formatted_transcript.txt", "w", encoding="utf-8") as f:
+            f.write(formatted_text)
+    except Exception as e:
+        print(f"Ошибка сохранения файла formatted_transcript.txt: {e}")
