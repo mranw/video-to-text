@@ -376,7 +376,6 @@ def async_recognize_speech(file_url, audio_duration, model=RECOGNITION_MODEL):
         return ""
 
 
-
 def get_transcript_name(file_path: str) -> str:
     """
     Определяет имя транскрипции для видеозаписи подкаста.
@@ -488,8 +487,8 @@ def process_video_file(file_item, audio_queue=None):
       - Скачивает видео,
       - Извлекает аудио и конвертирует его в OGG_OPUS,
       - Загружает аудио в Object Storage,
-      - Если RECOGNITION_MODEL == "deferred-general", помещает аудио-метаданные в очередь audio_queue.
-        и обновляет persistent-хранилище.
+    Если RECOGNITION_MODEL == "deferred-general", аудио-метаданные сохраняются в очередь и persistent-хранилище.
+    При ошибке загрузки аудио информация сохраняется в upload_errors.json для повторной обработки.
     """
     file_path = file_item.get("path")
     if file_path in processed_files:
@@ -529,12 +528,13 @@ def process_video_file(file_item, audio_queue=None):
         if not public_url:
             logging.error(f"Ошибка загрузки аудио в Object Storage: {file_path}")
             # Сохраняем metadata в persistent-хранилище ошибок для повторной обработки
-            error_item = parse_video_file_path(file_path)
-            error_item.update({
+            error_item = {
                 "file_path": file_path,
                 "local_audio": local_audio,
-                "audio_duration": audio_duration
-            })
+                "audio_duration": audio_duration,
+                "timestamp": time.time()
+            }
+            # Загружаем существующие ошибки, добавляем новый элемент и сохраняем
             current_errors = load_upload_errors()
             current_errors.append(error_item)
             save_upload_errors(current_errors)
@@ -604,17 +604,14 @@ def process_deferred_recognition(metadata_list):
 def process_all_videos():
     global podcast_file_counter
     podcast_file_counter = {}  # Сброс нумерации подкастов
-    global audio_metadata_list
-    audio_metadata_list = []  # Сброс списка метаданных
     video_files = list_video_files(DISK_FOLDER_PATH)
     logging.info(f"Найдено видеофайлов: {len(video_files)}")
     for file_item in video_files:
         process_video_file(file_item)
     if RECOGNITION_MODEL == "deferred-general":
-        # Сохраняем метаданные аудиофайлов для аудита и контроля.
-        save_audio_queue(audio_metadata_list)
-        # Отправляем запросы на распознавание параллельно.
-        recognized_texts = process_deferred_recognition(audio_metadata_list)
+        # Загружаем актуальные аудио-метаданные из persistent-хранилища
+        metadata_list = load_audio_queue()
+        recognized_texts = process_deferred_recognition(metadata_list)
         return "\n".join(recognized_texts)
     else:
         # В режиме general распознавание происходило сразу.
