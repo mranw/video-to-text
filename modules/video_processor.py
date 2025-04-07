@@ -125,6 +125,8 @@ def save_audio_queue(queue_items: list) -> None:
 processed_files = load_processed_files()
 # Глобальный список для хранения метаданных аудиофайлов в режиме deferred-general
 audio_metadata_list = []
+# Используется для нумерации файлов в одном подкасте
+podcast_file_counter = {}
 
 
 def list_video_files(folder_path):
@@ -134,7 +136,6 @@ def list_video_files(folder_path):
     """
     video_files = []
     headers = {"Authorization": f"OAuth {YANDEX_DISK_OAUTH_TOKEN}"}
-    IGNORED_FOLDER_NAME = "СЫРОЙ МАТЕРИАЛ"  # Название папки, которую нужно игнорировать
     MAX_FILE_SIZE = 45 * 1024 ** 3  # 45 ГБ в байтах
 
     try:
@@ -145,9 +146,6 @@ def list_video_files(folder_path):
             items = response.json().get("_embedded", {}).get("items", [])
             for item in items:
                 if item.get("type") == "dir":
-                    if item.get("name") == IGNORED_FOLDER_NAME:
-                        logging.info(f"Пропуск папки: {item.get('name')}")
-                        continue
                     subfolder = item.get("path")
                     video_files.extend(list_video_files(subfolder))
                 elif item.get("type") == "file" and item.get("mime_type", "").startswith("video/"):
@@ -379,78 +377,109 @@ def async_recognize_speech(file_url, audio_duration, model=RECOGNITION_MODEL):
 
 
 
-def parse_video_file_path(file_path: str) -> dict:
+def get_transcript_name(file_path: str) -> str:
     """
-    Извлекает информацию о курсе, разделе и уроке из полного пути видеофайла.
-
-    Структура пути:
-      - Если файл находится непосредственно в папке курса:
-          disk:/Настя Рыбка/Школа Насти Рыбки/Курс А/Video.mp4
-        => {'course': 'Курс А', 'section': None, 'lesson': 'Video.mp4'}
-
-      - Если файл находится в папке-уроке курса (без раздела):
-          disk:/Настя Рыбка/Школа Насти Рыбки/Курс А/Урок 1/Video.mp4
-        => {'course': 'Курс А', 'section': None, 'lesson': 'Урок 1'}
-
-      - Если файл находится в папке раздела:
-          disk:/Настя Рыбка/Школа Насти Рыбки/Курс А/Раздел 1/Урок 2/Video.mp4
-        => {'course': 'Курс А', 'section': 'Раздел 1', 'lesson': 'Урок 2'}
-
-      - Если в папке с уроком присутствуют вложенные папки (например, для частей урока),
-        их названия добавляются к названию урока в виде суффиксов "(1)", "(2)" и т.д.
-          disk:/Настя Рыбка/Школа Насти Рыбки/Курс А/Раздел 1/Урок 3/Подраздел 1/Подраздел 2/Video.mp4
-        => {'course': 'Курс А', 'section': 'Раздел 1', 'lesson': 'Урок 3 (1) (2)'}
+    Определяет имя транскрипции для видеозаписи подкаста.
+    Если видео находится в директории (например, "disk:/.../Подкаст 76/filename.mp4"),
+    имя транскрипции будет именем директории. Если в директории несколько файлов,
+    к имени добавляется порядковый номер: "Подкаст 76 (1)", "Подкаст 76 (2)" и т.д.
+    Если видео лежит непосредственно в основной папке, используется имя файла (без расширения).
     """
-    parts = file_path.split('/')
-    if len(parts) < 4:
-        return {}
-    # Добавьте обработку нестандартных случаев
-    if "СЫРОЙ МАТЕРИАЛ" in parts:
-        return {}  # Пропустить ненужные папки
-    course = parts[3]
-    result = {'course': course, 'section': None, 'lesson': None}
-    remaining = parts[4:]
-
-    if not remaining:
-        return result
-
-    if len(remaining) == 1:
-        # Файл лежит непосредственно в папке курса
-        result['lesson'] = remaining[0]
-    elif len(remaining) == 2:
-        # Файл лежит в папке-уроке, без раздела; название урока берем как имя папки
-        result['lesson'] = remaining[0]
+    base = DISK_FOLDER_PATH.rstrip('/')
+    rel = file_path.replace(base, "").lstrip('/')
+    parts = rel.split('/')
+    if len(parts) == 1:
+        # Видео не находится в директории
+        transcript = os.path.splitext(parts[0])[0]
     else:
-        # Если вложенных элементов больше двух:
-        # Считаем первый элемент разделом, второй — базовым названием урока.
-        # Все последующие (кроме последнего, которое является именем файла) считаем вложенными папками,
-        # и к названию урока добавляем суффиксы.
-        result['section'] = remaining[0]
-        base_lesson = remaining[1]
-        # Предполагаем, что последний элемент – это имя файла, поэтому вложенные папки - это элементы от 2 до -1
-        nested = remaining[2:-1]
-        if nested:
-            suffix = " ".join(f"({i + 1})" for i in range(len(nested)))
-            result['lesson'] = f"{base_lesson} {suffix}"
+        # Имя подкаста — первая директория
+        transcript = parts[0]
+        global podcast_file_counter
+        if transcript not in podcast_file_counter:
+            podcast_file_counter[transcript] = 1
         else:
-            result['lesson'] = base_lesson
-    return result
+            podcast_file_counter[transcript] += 1
+        count = podcast_file_counter[transcript]
+        if count > 1:
+            transcript = f"{transcript} ({count})"
+    return transcript
+
+# Глобальный словарь для нумерации файлов в подкастах
+podcast_file_counter = {}
 
 
-# Примеры использования:
-paths = [
-    "disk:/Настя Рыбка/Школа Насти Рыбки/Курс А/Video.mp4",
-    "disk:/Настя Рыбка/Школа Насти Рыбки/Курс А/Урок 1/Video.mp4",
-    "disk:/Настя Рыбка/Школа Насти Рыбки/Курс А/Раздел 1/Урок 2/Video.mp4",
-    "disk:/Настя Рыбка/Школа Насти Рыбки/Курс А/Раздел 1/Урок 3/Подраздел 1/Video.mp4",
-    "disk:/Настя Рыбка/Школа Насти Рыбки/Курс А/Раздел 1/Урок 3/Подраздел 1/Подраздел 2/Video.mp4"
-]
-
-for path in paths:
-    info = parse_video_file_path(path)
-    print(f"Путь: {path}")
-    print("Извлеченная информация:", info)
-    print("------")
+# def parse_video_file_path(file_path: str) -> dict:
+#     """
+#     Извлекает информацию о курсе, разделе и уроке из полного пути видеофайла.
+#
+#     Структура пути:
+#       - Если файл находится непосредственно в папке курса:
+#           disk:/Настя Рыбка/Школа Насти Рыбки/Курс А/Video.mp4
+#         => {'course': 'Курс А', 'section': None, 'lesson': 'Video.mp4'}
+#
+#       - Если файл находится в папке-уроке курса (без раздела):
+#           disk:/Настя Рыбка/Школа Насти Рыбки/Курс А/Урок 1/Video.mp4
+#         => {'course': 'Курс А', 'section': None, 'lesson': 'Урок 1'}
+#
+#       - Если файл находится в папке раздела:
+#           disk:/Настя Рыбка/Школа Насти Рыбки/Курс А/Раздел 1/Урок 2/Video.mp4
+#         => {'course': 'Курс А', 'section': 'Раздел 1', 'lesson': 'Урок 2'}
+#
+#       - Если в папке с уроком присутствуют вложенные папки (например, для частей урока),
+#         их названия добавляются к названию урока в виде суффиксов "(1)", "(2)" и т.д.
+#           disk:/Настя Рыбка/Школа Насти Рыбки/Курс А/Раздел 1/Урок 3/Подраздел 1/Подраздел 2/Video.mp4
+#         => {'course': 'Курс А', 'section': 'Раздел 1', 'lesson': 'Урок 3 (1) (2)'}
+#     """
+#     parts = file_path.split('/')
+#     if len(parts) < 4:
+#         return {}
+#     # Добавьте обработку нестандартных случаев
+#     if "СЫРОЙ МАТЕРИАЛ" in parts:
+#         return {}  # Пропустить ненужные папки
+#     course = parts[3]
+#     result = {'course': course, 'section': None, 'lesson': None}
+#     remaining = parts[4:]
+#
+#     if not remaining:
+#         return result
+#
+#     if len(remaining) == 1:
+#         # Файл лежит непосредственно в папке курса
+#         result['lesson'] = remaining[0]
+#     elif len(remaining) == 2:
+#         # Файл лежит в папке-уроке, без раздела; название урока берем как имя папки
+#         result['lesson'] = remaining[0]
+#     else:
+#         # Если вложенных элементов больше двух:
+#         # Считаем первый элемент разделом, второй — базовым названием урока.
+#         # Все последующие (кроме последнего, которое является именем файла) считаем вложенными папками,
+#         # и к названию урока добавляем суффиксы.
+#         result['section'] = remaining[0]
+#         base_lesson = remaining[1]
+#         # Предполагаем, что последний элемент – это имя файла, поэтому вложенные папки - это элементы от 2 до -1
+#         nested = remaining[2:-1]
+#         if nested:
+#             suffix = " ".join(f"({i + 1})" for i in range(len(nested)))
+#             result['lesson'] = f"{base_lesson} {suffix}"
+#         else:
+#             result['lesson'] = base_lesson
+#     return result
+#
+#
+# # Примеры использования:
+# paths = [
+#     "disk:/Настя Рыбка/Школа Насти Рыбки/Курс А/Video.mp4",
+#     "disk:/Настя Рыбка/Школа Насти Рыбки/Курс А/Урок 1/Video.mp4",
+#     "disk:/Настя Рыбка/Школа Насти Рыбки/Курс А/Раздел 1/Урок 2/Video.mp4",
+#     "disk:/Настя Рыбка/Школа Насти Рыбки/Курс А/Раздел 1/Урок 3/Подраздел 1/Video.mp4",
+#     "disk:/Настя Рыбка/Школа Насти Рыбки/Курс А/Раздел 1/Урок 3/Подраздел 1/Подраздел 2/Video.mp4"
+# ]
+#
+# for path in paths:
+#     info = parse_video_file_path(path)
+#     print(f"Путь: {path}")
+#     print("Извлеченная информация:", info)
+#     print("------")
 
 
 def process_video_file(file_item, audio_queue=None):
@@ -512,8 +541,12 @@ def process_video_file(file_item, audio_queue=None):
             return ""
         logging.info(f"Аудио загружено, публичная ссылка: {public_url}")
 
+        # Определяем имя транскрипции для подкаста
+        transcript_name = get_transcript_name(file_path)
+        logging.info(f"Имя транскрипции: {transcript_name}")
+
         if RECOGNITION_MODEL == "deferred-general" and audio_queue is not None:
-            metadata = parse_video_file_path(file_path)
+            metadata = {"transcript_name": transcript_name}
             metadata.update({
                 "public_url": public_url,
                 "audio_duration": audio_duration,
@@ -569,6 +602,8 @@ def process_deferred_recognition(metadata_list):
 
 
 def process_all_videos():
+    global podcast_file_counter
+    podcast_file_counter = {}  # Сброс нумерации подкастов
     global audio_metadata_list
     audio_metadata_list = []  # Сброс списка метаданных
     video_files = list_video_files(DISK_FOLDER_PATH)
