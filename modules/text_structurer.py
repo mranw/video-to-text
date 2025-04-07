@@ -1,221 +1,237 @@
 import os
 import re
-import json
 import logging
 
-def clean_text(text: str) -> str:
-    """
-    Очищает текст от лишних пробелов, спецсимволов и шумов.
-    """
-    text = re.sub(r'\s+', ' ', text)
-    text = re.sub(r'[^А-Яа-яA-Za-z0-9,.?! ]', '', text)
-    return text.strip()
+# Настройка логирования
+logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
 
-def split_raw_transcript(raw_text: str) -> list:
-    """
-    Разбивает сырой текст из файла на отдельные блоки.
-    Каждый блок начинается с маркера "=== Файл:".
-    Возвращает список словарей с полями:
-      - file_path: полный путь из заголовка,
-      - text: распознанный текст.
-    """
-    blocks = []
-    lines = raw_text.splitlines()
-    current_block = None
-    for line in lines:
-        line = line.strip()
-        if line.startswith("=== Файл:"):
-            if current_block:
-                blocks.append(current_block)
-            file_path = line.strip("=").replace("Файл:", "").strip()
-            current_block = {"file_path": file_path, "text": ""}
-        elif current_block is not None:
-            if line:
-                current_block["text"] += line + " "
-    if current_block:
-        blocks.append(current_block)
-    return blocks
+# Путь к Obsidian Vault – скрипт запускается в корне Vault.
+VAULT_ROOT = os.getcwd()
 
-def parse_video_file_path(file_path: str) -> dict:
+
+def read_file(filepath):
+    """Читает содержимое файла с кодировкой UTF-8."""
+    try:
+        with open(filepath, 'r', encoding='utf-8') as f:
+            return f.read()
+    except Exception as e:
+        logging.error(f"Ошибка чтения файла {filepath}: {e}")
+        return ""
+
+
+def split_into_lessons(text):
     """
-    Извлекает информацию о курсе, разделе и уроке из полного пути видеофайла.
-    Пример пути:
-      disk:/Настя Рыбка/Школа Насти Рыбки/Курс А/Раздел 1/Урок 2/Video.mp4
-    Возвращает словарь с ключами:
-      - course: название курса,
-      - section: название раздела (если есть, иначе None),
-      - lesson: название урока.
+    Разбивает текст на блоки-уроки по маркеру '=== Файл:'.
+    Возвращает список блоков (каждый блок – строка, содержащая заголовок и транскрипт).
     """
-    parts = file_path.split('/')
-    if len(parts) < 4:
-        return {}
-    # Предполагаем структуру: disk:/Настя Рыбка/Школа Насти Рыбки/<Курс>/...
-    course = parts[3].strip()
-    result = {"course": course, "section": None, "lesson": None}
-    remaining = parts[4:]
-    if not remaining:
-        return result
-    if len(remaining) == 1:
-        result["lesson"] = remaining[0].strip()
-    elif len(remaining) == 2:
-        result["lesson"] = remaining[0].strip()
+    lessons = re.split(r'\n=== Файл:', text)
+    lessons = [lesson.strip() for lesson in lessons if lesson.strip()]
+    logging.info(f"Найдено уроков: {len(lessons)}")
+    return lessons
+
+
+def extract_transcript(lesson_text):
+    """
+    Извлекает текст после маркера 'Распознанный текст:'.
+    Если маркер не найден – возвращает пустую строку.
+    """
+    match = re.search(r'Распознанный текст:\s*(.*)', lesson_text, re.DOTALL)
+    if match:
+        transcript = match.group(1).strip()
+        return transcript
     else:
-        result["section"] = remaining[0].strip()
-        base_lesson = remaining[1].strip()
-        nested = remaining[2:-1]
-        if nested:
-            suffix = " ".join(f"({i + 1})" for i in range(len(nested)))
-            result["lesson"] = f"{base_lesson} {suffix}"
+        logging.warning("Маркер 'Распознанный текст:' не найден в блоке урока.")
+        return ""
+
+
+def remove_extension(filename):
+    """Возвращает имя файла без расширения."""
+    return os.path.splitext(filename)[0].strip()
+
+
+def parse_file_path(header_line, source):
+    """
+    Извлекает информацию о курсе, модуле и уроке из заголовка блока.
+
+    header_line – строка заголовка, например:
+    "=== Файл: disk:/Настя Рыбка/Школа Насти Рыбки/Архив знаний/БДСМ/Модуль 1. Теория/Урок 1. Роль хозяина в отношениях/1 Структура доминирования  Роль хозяина.mp4 ==="
+
+    source – "raw" или "recognized".
+
+    Алгоритм:
+    1. Удаляем начальные и конечные символы "===".
+    2. Ищем маркер "Школа Насти Рыбки/" и берём всё, что следует после него.
+       Если маркер не найден, используем всё содержимое после "Файл:".
+    3. Разбиваем оставшуюся строку по символу "/".
+    4. Для recognized_texts.txt, если первый элемент равен "Архив знаний", то:
+         - Если длина списка равна 3, то: [ "Архив знаний", course, filename ]
+         - Если длина равна 4, то: [ "Архив знаний", course, lesson_dir, filename ]
+         - Если длина >= 5, то: [ "Архив знаний", course, module, lesson_dir, filename, ... ]
+    5. Для raw_transcript.txt структура ожидается как:
+         - Если длина списка равна 2: [ course, filename ]
+         - Если равна 3: [ course, module, filename ]
+         - Если >= 4: [ course, module, lesson_dir, ... ]
+    """
+    # Удаляем внешние символы "=" и пробелы
+    header_line = header_line.strip(" =")
+    # Найдём позицию маркера "Школа Насти Рыбки/"
+    marker = "Школа Насти Рыбки/"
+    if marker in header_line:
+        index = header_line.find(marker) + len(marker)
+        path_part = header_line[index:].strip()
+    else:
+        # Если маркер не найден, удаляем префикс "Файл:" если он есть
+        path_part = header_line.replace("Файл:", "").strip()
+
+    # Разбиваем путь по "/"
+    parts = [p.strip() for p in path_part.split("/") if p.strip()]
+
+    course = module = lesson = "Unknown"
+
+    if source == "raw":
+        # Пример структуры: ["1-я ступень", "Первая ступень Настя Рыбка.mov"]
+        if len(parts) == 2:
+            course = parts[0]
+            lesson = remove_extension(parts[1])
+            module = None
+        elif len(parts) == 3:
+            course = parts[0]
+            module = parts[1]
+            lesson = remove_extension(parts[2])
+        elif len(parts) >= 4:
+            course = parts[0]
+            module = parts[1]
+            # Если есть отдельная директория для урока – используем её
+            lesson = parts[2]
         else:
-            result["lesson"] = base_lesson
-    return result
-
-def export_to_json(data: list, filename: str = "knowledge_base.json") -> None:
-    """
-    Сохраняет структурированные данные в JSON-файл.
-    """
-    try:
-        with open(filename, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=4)
-        logging.info(f"База знаний успешно сохранена в {filename}")
-    except Exception as e:
-        logging.error(f"Ошибка сохранения базы знаний: {e}")
-
-def sanitize_filename(name: str) -> str:
-    """
-    Удаляет или заменяет символы, недопустимые в именах файлов.
-    """
-    name = re.sub(r'[^\w\s-]', '_', name)
-    name = re.sub(r'\s+', '_', name)
-    return name.strip("_")
-
-def export_to_obsidian(structured_data: list, vault_path: str) -> None:
-    """
-    Экспортирует структурированные данные в виде файлов Markdown для Obsidian.
-    Структура:
-      vault_path/
-        <Course>/
-          (если есть разделы)
-            <Section>/
-              <Lesson>.md
-          (если разделов нет)
-            <Lesson>.md
-    Каждый файл содержит YAML‑front matter с метаданными:
-      course, section, lesson, data_type, importance.
-    Затем следует заголовок и основной текст.
-    """
-    for item in structured_data:
-        course = item.get("course", "Без курса")
-        section = item.get("section")
-        lesson = item.get("lesson", "Без названия")
-        text = item.get("text", "").strip()
-        data_type = item.get("data_type", "не указано")
-        importance = item.get("importance", "low")
-        # Создаем директорию курса
-        course_dir = os.path.join(vault_path, sanitize_filename(course))
-        if not os.path.exists(course_dir):
-            os.makedirs(course_dir)
-        # Если есть раздел, создаем папку раздела
-        if section:
-            section_dir = os.path.join(course_dir, sanitize_filename(section))
-            if not os.path.exists(section_dir):
-                os.makedirs(section_dir)
-            target_dir = section_dir
+            logging.warning("Непредвиденная структура пути для raw: " + str(parts))
+    elif source == "recognized":
+        # Ожидаем, что первый элемент равен "Архив знаний"
+        if parts and parts[0] == "Архив знаний":
+            if len(parts) == 3:
+                # ["Архив знаний", course, filename]
+                course = parts[1]
+                module = None
+                lesson = remove_extension(parts[2])
+            elif len(parts) == 4:
+                # ["Архив знаний", course, lesson_dir, filename]
+                course = parts[1]
+                module = None
+                lesson = parts[2]
+            elif len(parts) >= 5:
+                # ["Архив знаний", course, module, lesson_dir, filename, ...]
+                course = parts[1]
+                module = parts[2]
+                lesson = parts[3]
+            else:
+                logging.warning("Непредвиденная структура пути для recognized: " + str(parts))
         else:
-            target_dir = course_dir
-        filename = sanitize_filename(lesson) + ".md"
-        file_path = os.path.join(target_dir, filename)
-        # Формируем содержимое Markdown с YAML front matter
-        md_content = (
-            f"---\n"
-            f"course: {course}\n"
-            f"section: {section if section else 'none'}\n"
-            f"lesson: {lesson}\n"
-            f"data_type: {data_type}\n"
-            f"importance: {importance}\n"
-            f"---\n\n"
-            f"# {lesson}\n\n{text}\n"
-        )
-        try:
-            with open(file_path, "w", encoding="utf-8") as f:
-                f.write(md_content)
-            logging.info(f"Урок '{lesson}' сохранён в {file_path}")
-        except Exception as e:
-            logging.error(f"Ошибка сохранения файла {file_path}: {e}")
+            # Если структура не соответствует ожидаемой, применяем логику похожую на raw.
+            if len(parts) == 2:
+                course = parts[0]
+                lesson = remove_extension(parts[1])
+                module = None
+            elif len(parts) == 3:
+                course = parts[0]
+                module = parts[1]
+                lesson = remove_extension(parts[2])
+            elif len(parts) >= 4:
+                course = parts[0]
+                module = parts[1]
+                lesson = parts[2]
+            else:
+                logging.warning("Непредвиденная структура пути для recognized (fallback): " + str(parts))
+    return course, module, lesson
 
-def structure_and_export(raw_text: str, vault_path: str, output_json: str = "knowledge_base.json",
-                           importance_override: str = None, data_type: str = "актуальные") -> str:
+
+def create_markdown_file(course, module, lesson, transcript, importance):
     """
-    Полный pipeline обработки:
-      1. Очистка сырого текста.
-      2. Разбиение на блоки (по записям, где каждая запись содержит заголовок с путем и текст).
-      3. Для каждого блока извлекается мета-информация (course, section, lesson) и добавляется содержимое.
-      4. Добавляется тип данных (data_type) для каждого урока.
-      5. Экспортируется база знаний в JSON.
-      6. Экспортируется структура в виде файлов Markdown для Obsidian.
-    Возвращает отформатированный текст для справки.
+    Создает .md файл с YAML front matter для Obsidian.
+    Файл сохраняется по пути: VAULT_ROOT/course/[module/]<lesson>.md
     """
-    cleaned = clean_text(raw_text)
-    blocks = split_raw_transcript(cleaned)
-    structured = []
-    for block in blocks:
-        file_path = block.get("file_path", "")
-        text = block.get("text", "").strip()
-        meta = parse_video_file_path(file_path)
-        meta["text"] = text
-        meta["data_type"] = data_type  # Устанавливаем тип данных, переданный как параметр
-        if importance_override:
-            meta["importance"] = importance_override
-        else:
-            meta["importance"] = "high" if "актуально" in text.lower() else "low"
-        structured.append(meta)
-    export_to_json(structured, output_json)
-    export_to_obsidian(structured, vault_path)
-    formatted_text = "\n\n".join(
-        [f"Курс: {item.get('course')}\nРаздел: {item.get('section')}\nУрок: {item.get('lesson')}\n"
-         f"Data Type: {item.get('data_type')}\nВажность: {item.get('importance')}\nТекст: {item.get('text')}"
-         for item in structured]
-    )
-    return formatted_text
+    # Формируем директорию для курса
+    course_dir = os.path.join(VAULT_ROOT, course)
+    os.makedirs(course_dir, exist_ok=True)
 
-if __name__ == "__main__":
-    # Чтение сырого текста для актуальных данных
+    # Если модуль задан – создаём поддиректорию
+    if module:
+        target_dir = os.path.join(course_dir, module)
+    else:
+        target_dir = course_dir
+    os.makedirs(target_dir, exist_ok=True)
+
+    # Имя файла – название урока с расширением .md
+    filename = f"{lesson}.md"
+    filepath = os.path.join(target_dir, filename)
+
+    # Форматирование содержимого для Obsidian с YAML front matter
+    md_content = f"""---
+title: "{lesson}"
+course: "{course}"
+module: "{module if module else ''}"
+importance: "{importance}"
+---
+
+{transcript}
+"""
     try:
-        with open("raw_transcript.txt", "r", encoding="utf-8") as f:
-            raw_text_actual = f.read()
+        with open(filepath, 'w', encoding='utf-8') as f:
+            f.write(md_content)
+        logging.info(f"Создан файл: {filepath}")
     except Exception as e:
-        print(f"Ошибка чтения файла raw_transcript.txt: {e}")
-        exit(1)
+        logging.error(f"Ошибка при создании файла {filepath}: {e}")
 
-    # Чтение сырого текста для архивных данных
-    try:
-        with open("recognized_texts.txt", "r", encoding="utf-8") as f:
-            raw_text_archive = f.read()
-    except Exception as e:
-        print(f"Ошибка чтения файла recognized_texts.txt: {e}")
-        exit(1)
 
-    # Путь к Obsidian Vault (скрипт запускается в корневой папке Vault)
-    vault_path = os.getcwd()
+def process_file(input_filepath, source, importance):
+    """
+    Обрабатывает входной файл (raw_transcript.txt или recognized_texts.txt):
+    - Читает содержимое.
+    - Разбивает его на блоки-уроки.
+    - Для каждого блока:
+        * Извлекает заголовок (первая строка блока) как путь файла.
+        * Парсит путь для определения course, module и lesson.
+        * Извлекает транскрипт.
+        * Создает markdown файл в соответствующей директории.
+    """
+    logging.info(f"Обработка файла {input_filepath} (source: {source}, importance: {importance})")
+    content = read_file(input_filepath)
+    if not content:
+        logging.error(f"Файл {input_filepath} пуст или не прочитан.")
+        return
 
-    # Обработка актуальных данных
-    formatted_actual = structure_and_export(raw_text_actual, vault_path,
-                                              output_json="knowledge_base_actual.json",
-                                              importance_override=None,
-                                              data_type="актуальные")
-    try:
-        with open("formatted_transcript_actual.txt", "w", encoding="utf-8") as f:
-            f.write(formatted_actual)
-    except Exception as e:
-        print(f"Ошибка сохранения файла formatted_transcript_actual.txt: {e}")
+    lessons = split_into_lessons(content)
+    for lesson_block in lessons:
+        lines = lesson_block.splitlines()
+        if not lines:
+            continue
+        header_line = lines[0]
+        transcript = extract_transcript(lesson_block)
+        if not transcript:
+            continue
 
-    # Обработка архивных данных
-    formatted_archive = structure_and_export(raw_text_archive, vault_path,
-                                               output_json="knowledge_base_archive.json",
-                                               importance_override=None,
-                                               data_type="архивные")
-    try:
-        with open("formatted_transcript_archive.txt", "w", encoding="utf-8") as f:
-            f.write(formatted_archive)
-    except Exception as e:
-        print(f"Ошибка сохранения файла formatted_transcript_archive.txt: {e}")
+        course, module, lesson = parse_file_path(header_line, source)
+        # Если название урока не найдено, попробуем взять его из последнего сегмента заголовка
+        if lesson == "Unknown" or not lesson:
+            parts = header_line.split("/")
+            if parts:
+                lesson = remove_extension(parts[-1])
+        create_markdown_file(course, module, lesson, transcript, importance)
+
+
+def main():
+    """
+    Основная функция:
+    - Обрабатывает файл raw_transcript.txt с актуальными данными (importance: high).
+    - Обрабатывает файл recognized_texts.txt с архивными данными (importance: low).
+    Все файлы создаются в текущей директории (корень Obsidian Vault).
+    """
+    raw_transcript_path = "raw_transcript.txt"
+    recognized_texts_path = "recognized_texts.txt"
+
+    process_file(raw_transcript_path, source="raw", importance="high")
+    process_file(recognized_texts_path, source="recognized", importance="low")
+    logging.info("Обработка всех файлов завершена.")
+
+
+if __name__ == '__main__':
+    main()
